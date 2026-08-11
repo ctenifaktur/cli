@@ -1,0 +1,46 @@
+{
+  "name": "ctenifaktur",
+  "version": "0.1.0",
+  "description": "Command-line client for Čtení Faktur: upload Czech invoices and receipts, download ISDOC, Pohoda and Money S3 exports.",
+  "keywords": [
+    "ctenifaktur",
+    "isdoc",
+    "pohoda",
+    "money-s3",
+    "faktura",
+    "invoice",
+    "invoice-ocr",
+    "czech",
+    "accounting",
+    "cli"
+  ],
+  "homepage": "https://ctenifaktur.cz",
+  "bugs": "https://github.com/ctenifaktur/cli/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ctenifaktur/cli.git"
+  },
+  "license": "MIT",
+  "author": "Čtení Faktur s.r.o.",
+  "type": "module",
+  "bin": {
+    "ctenifaktur": "dist/ctenifaktur.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "prepare": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  }
+}
