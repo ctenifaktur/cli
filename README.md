@@ -85,10 +85,14 @@ If `upload` is interrupted, the batch keeps running on the server. Pick it back 
 The repo ships a skill that teaches coding agents to drive this CLI:
 
 ```bash
-npx skills@latest add ctenifaktur/cli/ctenifaktur
+# Asks which agents to install it for.
+npx skills@latest add ctenifaktur/cli
+
+# Or name them, for a scripted setup.
+npx skills@latest add ctenifaktur/cli -g -a claude-code -a codex -a cursor -y
 ```
 
-It works in Claude Code, Cursor, Codex and anything else that reads the SKILL.md format. Source: [`skills/ctenifaktur`](./skills/ctenifaktur/SKILL.md).
+That covers Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI and the rest of the agents [`skills`](https://github.com/vercel-labs/skills) knows about. Source: [`skills/ctenifaktur`](./skills/ctenifaktur/SKILL.md).
 
 ## Development
 
