@@ -92,7 +92,7 @@ npx skills@latest add ctenifaktur/cli
 npx skills@latest add ctenifaktur/cli -g -a claude-code -a codex -a cursor -y
 ```
 
-That covers Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI and the rest of the agents [`skills`](https://github.com/vercel-labs/skills) knows about. Source: [`skills/ctenifaktur`](./skills/ctenifaktur/SKILL.md).
+That covers Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI and the rest of the agents [`skills`](https://github.com/vercel-labs/skills) knows about. A running session does not pick the skill up on its own; in Claude Code, `/reload-skills` does it without a restart. Source: [`skills/ctenifaktur`](./skills/ctenifaktur/SKILL.md).
 
 ## Development
 
