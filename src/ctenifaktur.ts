@@ -334,9 +334,8 @@ function filesLabel(count: number): string {
 }
 
 /**
- * Přípona → MIME. Deklarovaný typ není jen formalita, podle něj se dál větví
- * zpracování, takže se odvozuje z přípony a nehádá se z obsahu. Seznam
- * odpovídá tomu, co server přijímá; co v něm chybí, ten odmítne.
+ * Přípona → MIME. Typ se deklaruje podle přípony a nehádá se z obsahu, aby
+ * soubor dorazil pod tím, čím se jmenuje.
  */
 const CONTENT_TYPES: Record<string, string> = {
   pdf: "application/pdf",
