@@ -107,6 +107,26 @@ describe("upload-statement", () => {
     assert.deepEqual(server.received.idempotencyKeys, ["my-key"]);
   });
 
+  it("stops on an unknown flag instead of uploading the value behind it", async () => {
+    // `--unknown vypis2.pdf` se dřív odfiltroval jen zpola: přepínač zmizel,
+    // ale soubor za ním se nahrál a zaplatil.
+    const server = await stub({
+      documents: { batchId: "batch-1", uploads: [{ uploadId: "u1", fileName: "vypis.pdf" }] },
+      batches: [doneBatch("bank-statements", [])],
+    });
+    const dir = await tempDir();
+    const file = await writeFixture(dir, "vypis.pdf");
+    const stray = await writeFixture(dir, "vypis2.pdf");
+
+    const result = await runCli(["upload-statement", file, "--unknown", stray], {
+      base: server.base,
+    });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /neznámý přepínač: --unknown/);
+    assert.equal(server.received.prepared.length, 0);
+  });
+
   it("refuses to spend a credit on a missing file", async () => {
     const server = await stub({
       documents: { batchId: "batch-1", uploads: [] },
@@ -210,6 +230,19 @@ describe("export-statement", () => {
 
     assert.equal(result.code, 1);
     assert.match(result.stderr, /zadejte alespoň jedno id výpisu/);
+    assert.equal(server.received.exports.length, 0);
+  });
+
+  it("stops on an unknown flag instead of exporting the value behind it", async () => {
+    const server = await stub({ exportFile: { filename: "x.gpc", content: "" } });
+
+    const result = await runCli(
+      ["export-statement", "s1", "--unknown", "s2", "--format", "gpc"],
+      { base: server.base },
+    );
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /neznámý přepínač: --unknown/);
     assert.equal(server.received.exports.length, 0);
   });
 
