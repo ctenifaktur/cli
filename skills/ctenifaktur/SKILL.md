@@ -90,6 +90,11 @@ uctenka.pdf: selhalo (source_rejected)  this file failed, the rest ran on
 Stav dávky: completed_with_failures
 ```
 
+The code in brackets says what to do next. `source_rejected` means the same file
+will fail the same way, so do not re-send it. `insufficient_credits` is bank
+statements only: their price is per page and is settled during processing, so
+nothing was charged for that file, and it goes through once the office tops up.
+
 A `neúplné` line on stderr means the upload worked but the file held more
 invoices than came out, and the two counts want opposite responses:
 `nezpracováno` (discarded) are invoices that were recognised but never
