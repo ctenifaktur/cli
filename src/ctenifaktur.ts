@@ -701,6 +701,8 @@ Příkazy:
     Uloží hotový soubor s bankovními výpisy. Víc výpisů dá jeden soubor v obou
     formátech. Na rozdíl od dokladů se výpisy nemusí shodovat v účetní
     jednotce. Formát čísla účtu se bere z nastavení v aplikaci.
+    Oba formáty vyžadují číslo účtu. Sestava z platební brány ho na sobě nemá,
+    takže u ní export projde teprve po doplnění účtu v aplikaci.
 
 Příklad:
   ctenifaktur upload doklady/*.pdf --unit 6a5b41d8e7c204f93a1b8e62
