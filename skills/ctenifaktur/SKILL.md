@@ -1,6 +1,6 @@
 ---
 name: ctenifaktur
-description: Turn Czech invoices and receipts into accounting-ready files from the command line via the Čtení Faktur API. Use when the user wants data extracted from invoice PDFs or scans, a batch of documents turned into ISDOC, Pohoda XML or Money S3 XML, or invoices fed into Czech accounting software, and when they mention ctenifaktur, ISDOC or Czech invoice digitization. Uploading spends the user's credits.
+description: Turn Czech invoices, receipts and bank statements into accounting-ready files from the command line via the Čtení Faktur API. Use when the user wants data extracted from invoice PDFs or scans, a batch of documents turned into ISDOC, Pohoda XML or Money S3 XML, bank statements turned into GPC or SEPA XML, or any of it fed into Czech accounting software, and when they mention ctenifaktur, ISDOC, GPC or Czech invoice digitization. Uploading spends the user's credits.
 ---
 
 # Čtení Faktur CLI
@@ -19,8 +19,10 @@ ctenifaktur login                                            # store an API key
 ctenifaktur logout                                           # forget it again
 ctenifaktur units                                            # accounting units
 ctenifaktur upload <file...> [--unit <id>]                   # upload, wait, print document ids
+ctenifaktur upload-statement <file...> [--unit <id>]         # same, for bank statements
 ctenifaktur status <batch-id>                                # check a batch, running or finished
 ctenifaktur export <ids...> --format pohoda [--out file]     # write the export file
+ctenifaktur export-statement <ids...> --format gpc [--out file]
 ```
 
 **`ctenifaktur --help` documents every flag, the limits and the exit codes.**
@@ -46,7 +48,22 @@ you reuse the exact same `--idempotency-key`.
 a partial run for a clean one. Read the per-file lines: the documents that were
 printed are real and exportable.
 
-**One accounting unit per export.** The file carries one IČO. Mixing units is
+**A bank statement is never an invoice.** The two have separate commands, and
+the command IS the declaration — nothing sniffs the file. `upload` on a bank
+statement is accepted, billed, and exports as a nonsensical invoice from the
+bank for the closing balance, so check what the file actually is before
+choosing. Statements take PDFs, images and payment-gateway CSV reports. A PDF
+or an image costs one credit per three pages started, so a 30-page statement is
+10 credits, and that price is only settled during processing; a CSV report is a
+flat one credit, because it is parsed without the AI. Their ids belong to
+`export-statement` (`gpc`, `sepa-xml`) and are refused by `export` as
+`not_found`; `status` marks such a batch `(bankovní výpisy)`. Statement commands
+need a key issued with the bank-statement permissions ticked, otherwise
+`insufficient_scope` — a key issued for documents alone cannot be widened, the
+user has to issue a new one.
+
+**One accounting unit per export.** Applies to documents, not to statements.
+The file carries one IČO. Mixing units is
 rejected with `mixed_accounting_units`; split the ids by unit and run `export`
 once per unit. `--format isdoc` returns a `.isdoc` file for a single document
 but a ZIP for several, so do not hand `--out` an `.isdoc` name for a

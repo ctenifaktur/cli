@@ -3,7 +3,7 @@
 [![npm](https://img.shields.io/npm/v/ctenifaktur)](https://www.npmjs.com/package/ctenifaktur)
 [![license](https://img.shields.io/npm/l/ctenifaktur)](./LICENSE)
 
-Upload invoices and receipts, wait for the data to be extracted, and download a file your accounting software can import. A dependency-free client for the [Čtení Faktur](https://ctenifaktur.cz) API, the Czech invoice digitization service.
+Upload invoices, receipts and bank statements, wait for the data to be extracted, and download a file your accounting software can import. A dependency-free client for the [Čtení Faktur](https://ctenifaktur.cz) API, the Czech invoice digitization service.
 
 ![Demo](docs/demo.gif)
 
@@ -49,8 +49,10 @@ ctenifaktur login
 ctenifaktur logout
 ctenifaktur units
 ctenifaktur upload <file...> [--unit <id>] [--idempotency-key <key>]
+ctenifaktur upload-statement <file...> [--unit <id>] [--idempotency-key <key>]
 ctenifaktur status <batch-id>
 ctenifaktur export <document-id...> --format <isdoc|pohoda|money-s3> [--out <file>]
+ctenifaktur export-statement <statement-id...> --format <gpc|sepa-xml> [--out <file>]
 ```
 
 From a folder of PDFs to a file you can import:
@@ -71,6 +73,24 @@ import.xml
 ```
 
 `upload` blocks until extraction finishes and prints the document ids for each file. One file can produce several documents when it holds several invoices. Every extracted document costs a credit.
+
+Bank statements are a separate pair of commands, not a flag:
+
+```console
+$ ctenifaktur upload-statement vypis-07.pdf
+Dávka 0f9c1d64-1f2f-4d0e-9a1c-6b1d2b7e5a11, zpracovávám 1 soubor…
+vypis-07.pdf: 3b1c8a52-90f7-4a2e-bf51-2c7d1a4e6f80
+Stav dávky: completed (bankovní výpisy)
+
+$ ctenifaktur export-statement 3b1c8a52-90f7-4a2e-bf51-2c7d1a4e6f80 --format gpc
+vypis_2601947281_20260731_vnitrni.gpc
+```
+
+They take PDFs, images and payment-gateway CSV reports, and export to GPC or SEPA XML (camt.053). A statement costs one credit per three pages started, a CSV report one credit; the page count is only known during processing, so the final price is not settled at upload time.
+
+Separate commands rather than `upload --statement` on purpose: forgetting the flag would send a statement down the invoice pipeline, where it is accepted, billed, and exported as a nonsensical invoice from the bank for the closing balance. A command you have to name cannot be forgotten.
+
+The key needs the matching permissions. Statement commands want a key issued with **Číst bankovní výpisy** / **Nahrávat bankovní výpisy** ticked; a key issued only for documents answers `insufficient_scope`. Permissions cannot be changed on an existing key, so widen it by issuing a new one.
 
 The exit code is `0` only when the whole batch succeeded. A partial run exits `1`, so a script or a cron job cannot mistake it for a clean one, and `status` follows the same rule once the batch is finished.
 

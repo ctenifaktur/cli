@@ -26,13 +26,25 @@ export const CLI = join(here, "..", "dist", "ctenifaktur.js");
  * @param options.batches Snapshots returned by `GET /batches/:id`, one per
  *   call; the last one repeats, so a single-element array is a batch that
  *   never changes.
- * @param options.documents Response for `POST /documents`. `uploadUrl` is
- *   filled in by the stub, so callers only give `uploadId` and `fileName`.
+ * @param options.documents Response for `POST /documents` and
+ *   `POST /bank-statements`. `uploadUrl` is filled in by the stub, so callers
+ *   only give `uploadId` and `fileName`.
  * @param options.putStatus HTTP status per `uploadId` for the storage PUT,
  *   default 200. Use a 4xx to make an upload fail without any retry wait.
+ * @param options.exportFile Bytes returned by either export endpoint, with the
+ *   file name the CLI is supposed to take from `Content-Disposition`.
  */
-export async function startStub({ batches = [], documents, putStatus = {} } = {}) {
-  const received = { batchPolls: 0, puts: [], idempotencyKeys: [], prepared: [] };
+export async function startStub({ batches = [], documents, putStatus = {}, exportFile } = {}) {
+  const received = {
+    batchPolls: 0,
+    puts: [],
+    idempotencyKeys: [],
+    prepared: [],
+    /** Which upload endpoint each prepare call hit — the declaration under test. */
+    preparedPaths: [],
+    /** `{ path, body }` per export call, so a test can assert the field name. */
+    exports: [],
+  };
   let base = "";
 
   const server = createServer(async (req, res) => {
@@ -49,10 +61,32 @@ export async function startStub({ batches = [], documents, putStatus = {} } = {}
       return json(200, snapshot);
     }
 
-    if (req.method === "POST" && url.pathname === "/api/v1/documents") {
+    if (
+      req.method === "POST" &&
+      (url.pathname === "/api/v1/documents/export" ||
+        url.pathname === "/api/v1/bank-statements/export")
+    ) {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      received.exports.push({
+        path: url.pathname,
+        body: JSON.parse(Buffer.concat(chunks).toString()),
+      });
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Disposition": `attachment; filename="${exportFile?.filename ?? "export.bin"}"`,
+      });
+      return res.end(exportFile?.content ?? "");
+    }
+
+    if (
+      req.method === "POST" &&
+      (url.pathname === "/api/v1/documents" || url.pathname === "/api/v1/bank-statements")
+    ) {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       received.idempotencyKeys.push(req.headers["idempotency-key"]);
+      received.preparedPaths.push(url.pathname);
       received.prepared.push(JSON.parse(Buffer.concat(chunks).toString()));
       return json(200, {
         batchId: documents.batchId,

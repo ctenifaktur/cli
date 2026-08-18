@@ -1,12 +1,15 @@
 {
   "name": "ctenifaktur",
   "version": "0.1.0",
-  "description": "Command-line client for Čtení Faktur: upload Czech invoices and receipts, download ISDOC, Pohoda and Money S3 exports.",
+  "description": "Command-line client for Čtení Faktur: upload Czech invoices, receipts and bank statements, download ISDOC, Pohoda, Money S3, GPC and SEPA XML exports.",
   "keywords": [
     "ctenifaktur",
     "isdoc",
     "pohoda",
     "money-s3",
+    "gpc",
+    "camt053",
+    "bank-statement",
     "faktura",
     "invoice",
     "invoice-ocr",
