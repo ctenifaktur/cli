@@ -753,6 +753,19 @@ function takeFlag(args: string[], name: string): string | undefined {
   return value;
 }
 
+/**
+ * Po odloupnutí známých přepínačů nesmí zbýt žádný další.
+ *
+ * Jen je vyfiltrovat a jet dál je horší než se zastavit: přepínač zmizí, ale
+ * hodnota za ním propadne mezi poziční argumenty. `upload faktura.pdf --out
+ * export.xml`, tedy záměna s exportem, by tak nahrálo a zaplatilo i
+ * `export.xml`; u exportu by se z hodnoty stalo id navíc.
+ */
+function rejectUnknownFlags(args: string[]): void {
+  const unknown = args.find((arg) => arg.startsWith("--"));
+  if (unknown) fail(`neznámý přepínač: ${unknown}`);
+}
+
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
 
@@ -779,12 +792,13 @@ async function main(): Promise<void> {
       return cmdUnits();
     case "upload":
     case "upload-statement": {
-      // `takeFlag` musí proběhnout PŘED filtrem: mutuje `rest`, a kdyby se
-      // filtr vyhodnotil první, zůstala by hodnota přepínače v seznamu souborů.
+      // `takeFlag` mutuje `rest`, takže po něm v něm zbývají jen poziční
+      // argumenty a případný přepínač, který neznáme.
       const unit = takeFlag(rest, "unit");
       const key = takeFlag(rest, "idempotency-key");
+      rejectUnknownFlags(rest);
       return cmdUpload(
-        rest.filter((a) => !a.startsWith("--")),
+        rest,
         command === "upload-statement" ? "statement" : "document",
         unit,
         key,
@@ -796,9 +810,12 @@ async function main(): Promise<void> {
     case "export-statement": {
       const format = takeFlag(rest, "format");
       const output = takeFlag(rest, "out");
+      // Dřív než hlášení o chybějícím --format: u překlepu (`--frmat gpc`) je
+      // jméno toho přepínače užitečnější odpověď než „chybí --format".
+      rejectUnknownFlags(rest);
       if (!format) fail("chybí --format");
       return cmdExport(
-        rest.filter((a) => !a.startsWith("--")),
+        rest,
         command === "export-statement" ? "statement" : "document",
         format,
         output,

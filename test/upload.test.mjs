@@ -16,6 +16,26 @@ const DOC_A = "e48428a7-52af-4dc2-981f-dfba661a71ae";
 const TIMEOUT = 30_000;
 
 describe("upload", () => {
+  test("an unknown flag stops the run instead of billing the file behind it", async () => {
+    // `--out` patří k exportu, ne k nahrávání. Dřív se přepínač odfiltroval a
+    // `export.xml` za ním se nahrálo a zaplatilo jako doklad.
+    const dir = await tempDir();
+    const file = await writeFixture(dir, "faktura.pdf");
+    const stray = await writeFixture(dir, "export.xml");
+
+    const stub = await startStub({
+      documents: { batchId: "batch-1", uploads: [{ uploadId: "u1", fileName: "faktura.pdf" }] },
+      batches: [{ id: "batch-1", status: "completed", counts: {}, uploads: [] }],
+    });
+
+    const result = await runCli(["upload", file, "--out", stray], stub);
+    await stub.close();
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /neznámý přepínač: --out/);
+    assert.equal(stub.received.prepared.length, 0);
+  });
+
   test("a failed file does not drag down a namesake in another directory", { timeout: TIMEOUT }, async () => {
     const dir = await tempDir();
     await writeFixture(dir, "doklady/leden/faktura.pdf");
