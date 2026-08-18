@@ -88,7 +88,9 @@ vypis_2601947281_20260731_vnitrni.gpc
 
 They take PDFs, images and payment-gateway CSV reports, and export to GPC or SEPA XML (camt.053). A statement costs one credit per three pages started, a CSV report one credit; the page count is only known during processing, so the final price is not settled at upload time.
 
-Separate commands rather than `upload --statement` on purpose: forgetting the flag would send a statement down the invoice pipeline, where it is accepted, billed, and exported as a nonsensical invoice from the bank for the closing balance. A command you have to name cannot be forgotten.
+One caveat for gateway reports: a gateway does not print an account number, and both export formats require one. Such a statement uploads and bills fine, then `export-statement` fails with `invalid_request` on `header.accountNumber` — the account has to be filled in in the web app first, which no command here can do.
+
+Separate commands rather than `upload --statement` on purpose: forgetting the flag would send a statement down the invoice pipeline, where it is accepted, billed, and exported as an invoice from the bank with every amount zero. A command you have to name cannot be forgotten.
 
 The key needs the matching permissions. Statement commands want a key issued with **Číst bankovní výpisy** / **Nahrávat bankovní výpisy** ticked; a key issued only for documents answers `insufficient_scope`. Permissions cannot be changed on an existing key, so widen it by issuing a new one.
 

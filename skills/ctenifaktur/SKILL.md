@@ -50,12 +50,14 @@ printed are real and exportable.
 
 **A bank statement is never an invoice.** The two have separate commands, and
 the command IS the declaration — nothing sniffs the file. `upload` on a bank
-statement is accepted, billed, and exports as a nonsensical invoice from the
-bank for the closing balance, so check what the file actually is before
-choosing. Statements take PDFs, images and payment-gateway CSV reports. A PDF
+statement is accepted, billed, and exports as an invoice from the bank with every
+amount zero, so check what the file actually is before choosing. Statements take PDFs, images and payment-gateway CSV reports. A PDF
 or an image costs one credit per three pages started, so a 30-page statement is
 10 credits, and that price is only settled during processing; a CSV report is a
-flat one credit, because it is parsed without the AI. Their ids belong to
+flat one credit, because it is parsed without the AI. A gateway report carries no
+account number and both export formats need one, so `export-statement` on one
+fails with `invalid_request` until someone fills the account in in the web app;
+the upload is billed either way, so say so before uploading one. Their ids belong to
 `export-statement` (`gpc`, `sepa-xml`) and are refused by `export` as
 `not_found`; `status` marks such a batch `(bankovní výpisy)`. Statement commands
 need a key issued with the bank-statement permissions ticked, otherwise
