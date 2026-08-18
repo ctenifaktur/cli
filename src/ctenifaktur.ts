@@ -429,7 +429,7 @@ const UPLOAD_ENDPOINT: Record<UploadKind, string> = {
  * `kind` je vlastní příkaz, ne přepínač: kdyby se druh dokumentu zadával
  * volitelným `--statement`, znamenalo by zapomenout ho stejně jako dnes
  * „tohle je faktura", a výpis vytěžený jako faktura projde, zaplatí se a
- * exportuje se jako nesmyslný doklad na koncový zůstatek.
+ * exportuje se jako faktura od banky s nulovými částkami.
  */
 async function cmdUpload(
   files: string[],
