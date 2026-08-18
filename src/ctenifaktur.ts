@@ -290,6 +290,11 @@ interface CreateUploadResponse {
 
 interface BatchStatus {
   id: string;
+  /**
+   * Který endpoint dávku založil, a tím i ke kterému zdroji patří
+   * `uploads[].documentIds`. Volitelné, protože starší server ho neposílá.
+   */
+  kind?: "documents" | "bank-statements";
   status: "pending" | "processing" | "completed" | "completed_with_failures" | "failed";
   counts: Record<string, number>;
   uploads: Array<{
@@ -349,6 +354,10 @@ const CONTENT_TYPES: Record<string, string> = {
   tif: "image/tiff",
   isdoc: "application/xml",
   xml: "application/xml",
+  // Jen pro výpisy: CSV report z platební brány. Na `/documents` ho server
+  // odmítne s `unsupported_file_type`, což je správná odpověď — fakturou CSV
+  // report není.
+  csv: "text/csv",
 };
 
 /**
@@ -402,14 +411,32 @@ async function putFile(
   return false;
 }
 
+/** Druh dokumentu, který se nahrává. Určuje endpoint, nic se nehádá z obsahu. */
+type UploadKind = "document" | "statement";
+
+const UPLOAD_ENDPOINT: Record<UploadKind, string> = {
+  document: "/documents",
+  statement: "/bank-statements",
+};
+
 /**
  * Nahraje soubory a počká na dokončení.
  *
- * Dva kroky veřejného API (POST /documents → PUT) schováváme schválně:
- * z pohledu uživatele je nahrání jedna operace. Presigned PUT je bez hlaviček,
- * takže se posílají holé bajty.
+ * Dva kroky veřejného API (POST → PUT) schováváme schválně: z pohledu uživatele
+ * je nahrání jedna operace. Presigned PUT je bez hlaviček, takže se posílají
+ * holé bajty.
+ *
+ * `kind` je vlastní příkaz, ne přepínač: kdyby se druh dokumentu zadával
+ * volitelným `--statement`, znamenalo by zapomenout ho stejně jako dnes
+ * „tohle je faktura", a výpis vytěžený jako faktura projde, zaplatí se a
+ * exportuje se jako nesmyslný doklad na koncový zůstatek.
  */
-async function cmdUpload(files: string[], unitId?: string, idempotencyKey?: string): Promise<void> {
+async function cmdUpload(
+  files: string[],
+  kind: UploadKind,
+  unitId?: string,
+  idempotencyKey?: string,
+): Promise<void> {
   if (files.length === 0) fail("zadejte alespoň jeden soubor");
 
   const descriptors = await Promise.all(
@@ -435,7 +462,7 @@ async function cmdUpload(files: string[], unitId?: string, idempotencyKey?: stri
   // použít stejný.
   const key = idempotencyKey ?? crypto.randomUUID();
 
-  const prepared = await api<CreateUploadResponse>("/documents", {
+  const prepared = await api<CreateUploadResponse>(UPLOAD_ENDPOINT[kind], {
     method: "POST",
     headers: { "Idempotency-Key": key },
     body: JSON.stringify({
@@ -573,7 +600,14 @@ function printBatch(batch: BatchStatus, notUploaded: ReadonlySet<string> = new S
       console.error(`${upload.fileName}: neúplné (${parts.join(", ")})`);
     }
   }
-  console.log(`Stav dávky: ${batch.status}`);
+  // Druh se vypisuje jen u výpisů: ta id patří do `export-statement`, ne do
+  // `export`, a bez téhle věty to z výpisu id nepozná ani člověk, ani skript
+  // kolem CLI. U dokladů je druh výchozí a řádek navíc by jen šuměl.
+  console.log(
+    batch.kind === "bank-statements"
+      ? `Stav dávky: ${batch.status} (bankovní výpisy)`
+      : `Stav dávky: ${batch.status}`,
+  );
 }
 
 async function cmdStatus(batchId?: string): Promise<void> {
@@ -586,13 +620,29 @@ async function cmdStatus(batchId?: string): Promise<void> {
   if (TERMINAL.has(batch.status) && batch.status !== "completed") process.exit(1);
 }
 
-async function cmdExport(documentIds: string[], format: string, output?: string): Promise<void> {
-  if (documentIds.length === 0) fail("zadejte alespoň jedno id dokladu");
+async function cmdExport(
+  ids: string[],
+  kind: UploadKind,
+  format: string,
+  output?: string,
+): Promise<void> {
+  const isStatement = kind === "statement";
+  if (ids.length === 0) {
+    fail(isStatement ? "zadejte alespoň jedno id výpisu" : "zadejte alespoň jedno id dokladu");
+  }
 
-  const response = await apiRequest("/documents/export", {
-    method: "POST",
-    body: JSON.stringify({ documentIds, format }),
-  });
+  // Doklady i výpisy mají vlastní endpoint a vlastní jméno pole. Poslat id
+  // výpisů do exportu dokladů by skončilo na `not_found`, protože jsou to dvě
+  // oddělené sady id.
+  const response = await apiRequest(
+    isStatement ? "/bank-statements/export" : "/documents/export",
+    {
+      method: "POST",
+      body: JSON.stringify(
+        isStatement ? { statementIds: ids, format } : { documentIds: ids, format },
+      ),
+    },
+  );
 
   // Jméno bere z Content-Disposition, aby se soubor jmenoval stejně jako při
   // stažení z aplikace. Přes `basename`, protože je to hodnota z hlavičky:
@@ -629,9 +679,17 @@ Příkazy:
     doklady nezařazené a jednotku jim přiřadíte v aplikaci.
     Nahrání stojí kredit za každý vytěžený doklad.
 
+  upload-statement <soubor...> [--unit <id>] [--idempotency-key <klíč>]
+    Nahraje bankovní výpisy a počká na vytěžení. Bere PDF, obrázek nebo CSV
+    report z platební brány; z jednoho souboru může vzniknout víc výpisů.
+    Zpracování stojí kredit za každé započaté 3 strany, CSV report 1 kredit.
+    Vlastní příkaz schválně: kdyby to byl přepínač u upload, zapomenout ho by
+    znamenalo nechat výpis vytěžit jako fakturu.
+
   status <id-dávky>
     Zopakuje výpis dávky. Hodí se, když upload skončil dřív než zpracování;
-    dávka běží dál na serveru a doklady se neztratí.
+    dávka běží dál na serveru a doklady se neztratí. U dávky výpisů to řekne,
+    ať se id nepošlou do špatného exportu.
 
   export <id-dokladu...> --format <isdoc|pohoda|money-s3> [--out <soubor>]
     Uloží hotový soubor a vypíše jeho jméno. Bez --out se jmenuje stejně jako
@@ -639,10 +697,18 @@ Příkazy:
     doklady musí patřit jedné účetní jednotce. Pohoda a Money S3 vracejí vždy
     jedno XML, ISDOC u jednoho dokladu soubor .isdoc a u více dokladů ZIP.
 
+  export-statement <id-výpisu...> --format <gpc|sepa-xml> [--out <soubor>]
+    Uloží hotový soubor s bankovními výpisy. Víc výpisů dá jeden soubor v obou
+    formátech. Na rozdíl od dokladů se výpisy nemusí shodovat v účetní
+    jednotce. Formát čísla účtu se bere z nastavení v aplikaci.
+
 Příklad:
   ctenifaktur upload doklady/*.pdf --unit 6a5b41d8e7c204f93a1b8e62
   ctenifaktur export e48428a7-52af-4dc2-981f-dfba661a71ae \\
       af668802-4304-4623-9ec4-fd89293e69e0 --format pohoda --out import.xml
+  ctenifaktur upload-statement vypis-07.pdf
+  ctenifaktur export-statement 0f9c1d64-1f2f-4d0e-9a1c-6b1d2b7e5a11 \\
+      --format gpc --out vypis.gpc
 
 Přihlášení:
   Klíč vydáte v aplikaci v sekci Tým a nastavení, část API klíče, a předáte ho
@@ -659,7 +725,8 @@ Návratové kódy:
       úspěšné doklady z výpisu výš platí a jdou exportovat
 
 Limity:
-  25 MB na soubor, 300 souborů na dávku, 500 dokladů na jeden export.
+  25 MB na soubor, 300 souborů na dávku, 500 dokladů na jeden export dokladů,
+  100 výpisů na jeden export výpisů.
 
 Opakované spuštění:
   Ze skriptu nebo z cronu předejte vlastní --idempotency-key a při opakování
@@ -708,20 +775,32 @@ async function main(): Promise<void> {
   switch (command) {
     case "units":
       return cmdUnits();
-    case "upload": {
+    case "upload":
+    case "upload-statement": {
       // `takeFlag` musí proběhnout PŘED filtrem: mutuje `rest`, a kdyby se
       // filtr vyhodnotil první, zůstala by hodnota přepínače v seznamu souborů.
       const unit = takeFlag(rest, "unit");
       const key = takeFlag(rest, "idempotency-key");
-      return cmdUpload(rest.filter((a) => !a.startsWith("--")), unit, key);
+      return cmdUpload(
+        rest.filter((a) => !a.startsWith("--")),
+        command === "upload-statement" ? "statement" : "document",
+        unit,
+        key,
+      );
     }
     case "status":
       return cmdStatus(rest[0]);
-    case "export": {
+    case "export":
+    case "export-statement": {
       const format = takeFlag(rest, "format");
       const output = takeFlag(rest, "out");
       if (!format) fail("chybí --format");
-      return cmdExport(rest.filter((a) => !a.startsWith("--")), format, output);
+      return cmdExport(
+        rest.filter((a) => !a.startsWith("--")),
+        command === "export-statement" ? "statement" : "document",
+        format,
+        output,
+      );
     }
     default:
       fail(`neznámý příkaz: ${command}`);
