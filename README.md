@@ -76,15 +76,7 @@ import.xml
 
 Bank statements are a separate pair of commands, not a flag:
 
-```console
-$ ctenifaktur upload-statement vypis-07.pdf
-Dávka 0f9c1d64-1f2f-4d0e-9a1c-6b1d2b7e5a11, zpracovávám 1 soubor…
-vypis-07.pdf: 3b1c8a52-90f7-4a2e-bf51-2c7d1a4e6f80
-Stav dávky: completed (bankovní výpisy)
-
-$ ctenifaktur export-statement 3b1c8a52-90f7-4a2e-bf51-2c7d1a4e6f80 --format gpc
-vypis_2601947281_20260731_vnitrni.gpc
-```
+![Bank statement demo](docs/demo-statements.gif)
 
 They take PDFs, images and payment-gateway CSV reports, and export to GPC or SEPA XML (camt.053). A statement costs one credit per three pages started, a CSV report one credit; the page count is only known during processing, so the final price is not settled at upload time.
 

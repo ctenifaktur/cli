@@ -6,18 +6,22 @@
 # tape's hidden `script` writes, and as soon as the upload has printed its ids
 # it puts them on the clipboard for the tape's `Paste`.
 #
-# The first uuid in the log is the batch, the next two are the documents.
+# The first uuid in the log is the batch, the ones after it are the documents
+# (or the statement).
 set -eu
 
 LOG=${1:-/tmp/ctenifaktur-demo.log}
+# How many ids to hand over: two documents for demo.tape, one statement for
+# demo-statements.tape.
+WANT=${2:-2}
 UUID='[0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}'
 
 rm -f "$LOG"
 i=0
 while [ "$i" -lt 6000 ]; do
   if [ -f "$LOG" ]; then
-    ids=$(LC_ALL=C grep -o "$UUID" "$LOG" | tail -n +2 | head -2 | tr '\n' ' ')
-    if [ "$(printf '%s' "$ids" | wc -w | tr -d ' ')" = "2" ]; then
+    ids=$(LC_ALL=C grep -o "$UUID" "$LOG" | tail -n +2 | head -"$WANT" | tr '\n' ' ')
+    if [ "$(printf '%s' "$ids" | wc -w | tr -d ' ')" = "$WANT" ]; then
       printf '%s' "$ids" | pbcopy
       echo "clipboard: $ids"
       exit 0
