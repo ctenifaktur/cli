@@ -37,6 +37,7 @@ export const CLI = join(here, "..", "dist", "ctenifaktur.js");
  *   `documents`, `export`) answer `429` with `Retry-After: 1` before the real
  *   response. `Infinity` never lets up. One second keeps the waiting real but
  *   short enough for the suite.
+ * @param options.credits Body for `GET /credits`.
  * @param options.apiError `{ path, status, body }` — one endpoint answers this
  *   error instead of its normal response, so a test can drive the CLI's error
  *   rendering with a real body.
@@ -48,6 +49,7 @@ export async function startStub({
   exportFile,
   throttle = {},
   apiError,
+  credits,
 } = {}) {
   const received = {
     batchPolls: 0,
@@ -89,6 +91,11 @@ export async function startStub({
     if (apiError && url.pathname === apiError.path) {
       req.resume();
       return json(apiError.status, apiError.body);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/v1/credits") {
+      req.resume();
+      return json(200, credits);
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/api/v1/batches/")) {

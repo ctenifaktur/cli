@@ -18,6 +18,7 @@ stored key, so a pipeline needs no login at all.
 ctenifaktur login                                            # store an API key
 ctenifaktur logout                                           # forget it again
 ctenifaktur units                                            # accounting units
+ctenifaktur credits                                          # what the office can still process
 ctenifaktur upload <file...> [--unit <id>]                   # upload, wait, print document ids
 ctenifaktur upload-statement <file...> [--unit <id>]         # same, for bank statements
 ctenifaktur status <batch-id>                                # check a batch, running or finished
@@ -34,7 +35,10 @@ English and stable, the prose after it is not.
 **Confirm before uploading.** Each extracted document costs a credit, and one
 PDF can hold several invoices, so a 30-file batch can cost more than 30 credits.
 List the files for the user and wait for a yes. Never upload a directory you
-have not enumerated.
+have not enumerated. `ctenifaktur credits` says what is left before you spend
+it: the plan half of that number resets at the date it prints, the credit half
+does not. For bank statements it is an estimate, because they cost one credit
+per three pages started and the page count is known only during processing.
 
 **Never re-upload to recover.** `upload` can block for up to 30 minutes, so a
 tool timeout or a dropped connection kills it more often than any other

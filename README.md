@@ -48,6 +48,7 @@ echo "$CF_API_KEY" | ctenifaktur login    # or store it once, from a pipe
 ctenifaktur login
 ctenifaktur logout
 ctenifaktur units
+ctenifaktur credits
 ctenifaktur upload <file...> [--unit <id>] [--idempotency-key <key>]
 ctenifaktur upload-statement <file...> [--unit <id>] [--idempotency-key <key>]
 ctenifaktur status <batch-id>

@@ -368,6 +368,43 @@ async function cmdLogout(): Promise<void> {
   console.log(`Odhlášeno od ${API_URL}. Klíč zneplatníte v aplikaci.`);
 }
 
+interface Credits {
+  remaining: number;
+  planRemaining: number;
+  credits: number;
+  plan: string;
+  periodEnd: string;
+}
+
+/**
+ * Čeština chce tvar podle počtu. Zvlášť od `filesLabel`, protože tady jde
+ * o doklady, ne o soubory, a z jednoho souboru jich vzniká víc.
+ */
+function documentsLabel(count: number): string {
+  if (count === 1) return "1 doklad";
+  if (count > 1 && count < 5) return `${count} doklady`;
+  return `${count} dokladů`;
+}
+
+/**
+ * Kolik toho kancelář ještě zpracuje.
+ *
+ * Rozpad na tarif a kredity není kosmetika: tarifní část se k datu obnoví,
+ * kreditová ne. Kdo plánuje velkou dávku na začátku měsíce, počítá s něčím
+ * jiným než ten, kdo ji posílá poslední den období.
+ */
+async function cmdCredits(): Promise<void> {
+  const state = await api<Credits>("/credits");
+  const renews = new Date(state.periodEnd).toLocaleDateString("cs-CZ");
+
+  console.log(`Zbývá ${documentsLabel(state.remaining)}.`);
+  console.log(`Z toho tarif ${state.plan}: ${state.planRemaining} (obnoví se ${renews}), kredity: ${state.credits}.`);
+  // U výpisů je to odhad: cena je za každé započaté tři strany a počet stran
+  // zjistí server až při zpracování. Bez téhle věty by pětistránkový výpis
+  // vypadal jako jeden doklad.
+  console.log("U bankovních výpisů je to odhad, jejich cena se počítá po třech stranách.");
+}
+
 async function cmdUnits(): Promise<void> {
   const { accountingUnits } = await api<{ accountingUnits: AccountingUnit[] }>("/accounting-units");
 
@@ -777,6 +814,11 @@ Příkazy:
   units
     Vypíše účetní jednotky. Z prvního sloupce vezmete id pro --unit.
 
+  credits
+    Kolik dokladů kancelář ještě zpracuje, rozpadlé na tarifní kvótu a
+    kredity. Kvóta se obnovuje k uvedenému datu, kredity ne. U výpisů je to
+    odhad, jejich cena se počítá za každé započaté tři strany.
+
   upload <soubor...> [--unit <id>] [--idempotency-key <klíč>]
     Nahraje soubory a počká na vytěžení. U každého vypíše id vzniklých
     dokladů; z jednoho souboru jich může vzniknout víc. Bez --unit zůstanou
@@ -900,6 +942,8 @@ async function main(): Promise<void> {
   switch (command) {
     case "units":
       return cmdUnits();
+    case "credits":
+      return cmdCredits();
     case "upload":
     case "upload-statement": {
       // `takeFlag` mutuje `rest`, takže po něm v něm zbývají jen poziční
