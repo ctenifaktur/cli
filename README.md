@@ -54,6 +54,8 @@ ctenifaktur upload-statement <file...> [--unit <id>] [--idempotency-key <key>]
 ctenifaktur status <batch-id>
 ctenifaktur export <document-id...> --format <isdoc|pohoda|money-s3> [--out <file>]
 ctenifaktur export-statement <statement-id...> --format <gpc|sepa-xml> [--out <file>]
+
+ctenifaktur --json <command...>    # machine-readable output, see below
 ```
 
 From a folder of PDFs to a file you can import:
@@ -96,6 +98,51 @@ If `upload` is interrupted, the batch keeps running on the server. Pick it back 
 The rate limit is counted per key per minute. When it runs out the CLI waits for `Retry-After` and retries, and if the limit still holds, the run ends by printing the `ctenifaktur status <batch-id>` command to pick the batch up with, because the batch is already paid for and keeps running on the server. A refusal that carries `details`, such as a mixed-unit export or a validation error, prints them line by line, so the advice to split the batch by unit can actually be followed.
 
 > The CLI speaks Czech, like the rest of the product and its users. Error codes are the exception: the `code` before the colon is English and stable enough to branch on, the prose after it is not.
+
+## Machine-readable output
+
+The output above is Czech prose, written for the person running the command. `--json` gives the same run to a script instead. It is a global switch and can sit anywhere on the line:
+
+```console
+$ ctenifaktur --json status 7da58615-dcac-4a15-9443-d836b7d8cec7 | jq -r '
+    .uploads[] | select(.status == "failed") | "\(.fileName)\t\(.errorCode)"'
+uctenka.pdf     source_rejected
+```
+
+With the flag on, standard output carries exactly one valid JSON document and nothing else — never a second one, and never a line of prose. Progress, warnings and the advice printed after a failure all go to standard error, so a run can keep talking to you while its output is being piped into `jq`. The one command that produces no document is `--help`, which stays prose and moves to standard error, leaving stdout empty rather than unparseable.
+
+The document is the response from the public `/api/v1`, passed through rather than rebuilt — for the endpoints the [OpenAPI document](https://ctenifaktur.cz/api/v1/openapi.json) describes, that is exactly the shape it specifies, including fields this client never reads itself:
+
+| Command | Document |
+|---|---|
+| `units` | `{"accountingUnits":[…]}`, verbatim from `GET /accounting-units` |
+| `credits` | the balance object, verbatim |
+| `status`, `upload`, `upload-statement` | the batch, verbatim from `GET /batches/{id}` — `status`, `counts`, and `uploads[]` with `documentIds`, `incomplete` and `errorCode` |
+| `export`, `export-statement` | `{"file":"import.xml"}` — the endpoint answers with the bytes of a file, not with JSON, so the only fact the run produced is where it wrote |
+| `login` | `{"apiUrl":"…","loggedIn":true,"accountingUnitCount":1}` |
+| `logout` | `{"apiUrl":"…","loggedIn":false}` |
+
+`upload` prints its document once, at the end, in the same schema `status` returns for that batch — so a run that finished and a run you had to pick up again with `status` are read by the same parser. Note that the batch-level `status` stays the server's own: it can still read `processing` while every entry in `uploads[]` is finished, because the server does not close a batch until its cleanup drops an upload that never arrived. Read `uploads[]` for what happened, `status` for whether the server is done.
+
+One thing only `upload` knows is which files never reached storage. It marks those `"status":"failed","errorCode":"upload_not_received"` and moves `counts` to match, which is what the server writes itself once its cleanup runs — but only for uploads the server still has unsettled. One it has already completed keeps its `documentIds`, because the server saw the file arrive and the local bookkeeping did not. That is also why `upload` can stop on a batch that is still running and exit `1`, where `status` on the same batch reports `processing` and exits `0`. The `Dávka <id>` line moves to standard error, which is what keeps the batch id reachable if the run is killed mid-way.
+
+An error is a document too, and it is the API's own error envelope:
+
+```console
+$ ctenifaktur --json export e48428a7-… af668802-… --format pohoda | jq '.error.details'
+{"documents":[{"id":"e48428a7-…","accountingUnitId":"6a5b41d8e7c204f93a1b8e62","ico":"12345679"},
+              {"id":"af668802-…","accountingUnitId":null,"ico":"87654321"}]}
+```
+
+That is the point of the flag for `export`: the refusal tells you how to split the batch, and now the answer can be acted on instead of read. `error.code` comes from one of three namespaces, and they do not overlap:
+
+- the API's own codes (`rate_limited`, `not_found`, `insufficient_scope`, `mixed_accounting_units`, …), enumerated in the OpenAPI document;
+- `http_<status>` when the response carries no error envelope at all — typically a `502` from a gateway in front of the app, where there is no code to pass through;
+- `cli_<reason>` for failures raised by the client rather than the server: `cli_usage`, `cli_not_logged_in`, `cli_file_not_found`, `cli_upload_failed`, `cli_timeout`, `cli_network`, `cli_unexpected`.
+
+Exit codes do not change, and neither does anything without the flag. `ctenifaktur --help` stays prose, because that one really is for a human — under `--json` it goes to standard error, so a wrapper that adds the flag to whatever it was given never finds Czech text where a document should be.
+
+There is no `--format json` for exports and there will not be one: extracted document data leaves the service as a real accounting format (ISDOC, Pohoda, Money S3), and converting that to JSON in the client would be a second implementation of the extraction. An analysis over the documents themselves is an analysis over the exported file; `--json` is for driving the pipeline that produces it.
 
 ## AI agent skill
 

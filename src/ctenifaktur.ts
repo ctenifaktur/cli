@@ -11,6 +11,7 @@
  * https://ctenifaktur.cz.
  */
 
+import { writeSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -22,6 +23,13 @@ const API_URL = (process.env.CF_API_URL ?? "https://ctenifaktur.cz").replace(/\/
  * příkaz `login` musí projít i tehdy, když ještě žádný uložený není.
  */
 let apiKey: string | undefined;
+
+/**
+ * Zapíná strojově čitelný výstup (`--json`). Drží se v proměnné, protože se
+ * přepínač odloupne z argumentů dřív, než se pozná příkaz, a sahá na něj pak
+ * každý výpis.
+ */
+let jsonMode = false;
 
 /**
  * Uložené klíče jdou do konfiguračního adresáře podle XDG, což je i na macOS
@@ -98,12 +106,12 @@ function assertSecureApiUrl(url: string): void {
   try {
     parsed = new URL(url);
   } catch {
-    fail(`CF_API_URL není platná adresa: ${url}`);
+    fail(`CF_API_URL není platná adresa: ${url}`, "cli_usage");
   }
   if (parsed.protocol === "https:") return;
   const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]";
   if (parsed.protocol === "http:" && local) return;
-  fail(`CF_API_URL musí být https (mimo localhost), je ${parsed.protocol}//${parsed.host}`);
+  fail(`CF_API_URL musí být https (mimo localhost), je ${parsed.protocol}//${parsed.host}`, "cli_usage");
 }
 
 /**
@@ -125,9 +133,91 @@ async function fetchWithTimeout(
   }
 }
 
+/** Jestli už dokument na stdout odešel. Hlídá slib „právě jeden dokument". */
+let printed = false;
+
+/**
+ * Jediný zápis na stdout v režimu `--json`. Za běh nejvýš jeden: dva objekty za
+ * sebou dávají něco, co `jq` ani `JSON.parse` nepřečte.
+ */
+function printJson(value: unknown): void {
+  const document = `${JSON.stringify(value)}\n`;
+  // Nastavuje se před zápisem, ne po něm: když se zápis v půlce rozbije, je
+  // na stdout kus dokumentu a druhý pokus by se k němu jen přilepil.
+  printed = true;
+  writeAll(1, document);
+}
+
+/** Uspává o pár milisekund, aniž by k tomu potřeboval `await`. */
+const IDLE = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Zápis, který přežije `process.exit`.
+ *
+ * Zápis do roury je v Node asynchronní a `process.exit` ho nepočká, takže
+ * poslední řádky skončí nedopsané. U dokumentu je to vidět hned — delší než
+ * rourová vyrovnávací paměť (64 KiB) přijde useknutý uprostřed a takový JSON
+ * není kratší odpověď, je to neplatný dokument k návratovému kódu 1, tedy
+ * k nerozeznání od pádu nástroje. Odmítnutý export pěti set dokladů se k tomu
+ * stropu dostane na doraz: `mixed_accounting_units` vrací řádek na každý
+ * doklad. Na chybovém výstupu je v sázce rada, čím si pro dávku dojít.
+ */
+function writeAll(fd: number, text: string): void {
+  const bytes = Buffer.from(text, "utf8");
+  for (let written = 0; written < bytes.length; ) {
+    try {
+      written += writeSync(fd, bytes, written);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // Čtenář zavřel rouru (`| head -1`). Není komu dopisovat a spadnout na
+      // tom by z běžného ukončení udělalo chybu; `console.log` mlčí taky.
+      if (code === "EPIPE") return;
+      if (code !== "EAGAIN") throw error;
+      // Roura je plná a nikdo z ní právě nečte. Není to chyba zápisu, jen
+      // „teď ne", takže se počká a zkusí znovu. Bez toho čekání by z opakování
+      // bylo vytížené jádro po celou dobu, co si čtenář dává načas.
+      Atomics.wait(IDLE, 0, 0, 5);
+    }
+  }
+}
+
+/**
+ * Věta pro člověka, která se v `--json` neztrácí, jen mění proud: standardní
+ * výstup tam patří tomu jedinému dokumentu, takže všechno ostatní jde na
+ * chybový. Bez přepínače zůstává přesně tam, kde byla.
+ */
+function note(line: string): void {
+  // Synchronně, ať je na chybovém výstupu jediný pisatel a řádky se nemůžou
+  // předběhnout: `writeAll` v `failFromApi` by jinak proskočil před tenhle
+  // řádek a `process.exit` by ho zahodil — a je to on, kdo nese id dávky.
+  if (jsonMode) writeAll(2, `${line}\n`);
+  else console.log(line);
+}
+
+/**
+ * Kódy chyb, které vzniknou tady v CLI, ne na serveru.
+ *
+ * Vlastní jmenný prostor s předponou `cli_`: kódy z API jsou publikovaný
+ * kontrakt v OpenAPI a přimíchat si mezi ně vlastní hodnotu by znamenalo, že
+ * volající větví podle kódu, který mu server nikdy nepošle. Vidí je jen
+ * `--json`; do textového výpisu se nevypisují, aby se hlášky nezměnily.
+ */
+type CliErrorCode =
+  | "cli_usage"
+  | "cli_not_logged_in"
+  | "cli_file_not_found"
+  | "cli_upload_failed"
+  | "cli_timeout"
+  | "cli_network"
+  | "cli_unexpected";
+
 /** Neúspěch = nenulový exit kód, jinak by se chyba ve skriptu ztratila. */
-function fail(message: string): never {
-  console.error(`Chyba: ${message}`);
+function fail(message: string, code: CliErrorCode): never {
+  // `printed` je pojistka pro chybu, která přijde až po vypsaném dokumentu:
+  // druhý by se k němu přilepil a rozbil i ten první, takže zbývá věta na
+  // chybový výstup a návratový kód.
+  if (jsonMode && !printed) printJson({ error: { code, message } });
+  else writeAll(2, `Chyba: ${message}\n`);
   process.exit(1);
 }
 
@@ -136,10 +226,17 @@ interface ApiError {
 }
 
 /**
- * Chybu z API hlásíme kódem i větou. Kód je stabilní kontrakt, na který se dá
+ * Chyba tak, jak ji hlásí veřejné API. Kód je stabilní kontrakt, na který se dá
  * navěsit větvení; věta je pro člověka a měnit se může.
  */
-async function describeFailure(response: Response): Promise<string> {
+interface Failure {
+  code: string;
+  message: string;
+  details?: unknown;
+}
+
+/** Rozebere chybovou odpověď na kód, větu a detaily. */
+async function describeFailure(response: Response): Promise<Failure> {
   const body = (await response.json().catch(() => ({}))) as ApiError;
 
   // Náš 429 kód v těle nese, ale 429 od brány před aplikací ne. Bez tohohle by
@@ -147,12 +244,39 @@ async function describeFailure(response: Response): Promise<string> {
   // dvojtečkou, byla zrovna ta, kde ho volající nenajde.
   if (response.status === 429 && !body.error?.code) {
     const retry = response.headers.get("retry-after");
-    return `rate_limited: překročen limit požadavků${retry ? `, zkuste to za ${retry} s` : ""}`;
+    return {
+      code: "rate_limited",
+      message: `překročen limit požadavků${retry ? `, zkuste to za ${retry} s` : ""}`,
+    };
   }
 
-  const code = body.error?.code ?? `http_${response.status}`;
-  const detail = body.error?.message ?? response.statusText;
-  return `${code}: ${detail}${formatDetails(body.error?.details)}`;
+  return {
+    code: body.error?.code ?? `http_${response.status}`,
+    message: body.error?.message ?? response.statusText,
+    // `JSON.stringify` klíč s `undefined` vynechá, takže se chybějící detaily
+    // v dokumentu neobjeví jako `"details": null`. To je jiné tvrzení: „server
+    // poslal prázdno" místo „server neposlal nic".
+    details: body.error?.details,
+  };
+}
+
+/**
+ * Konec běhu chybou, kterou ohlásil server.
+ *
+ * V `--json` se propouští celá obálka `{ "error": … }` tak, jak přišla z API,
+ * včetně `details`: je to tentýž tvar, který by volající dostal, kdyby na
+ * endpoint sáhl sám, takže na něj sedne stejné větvení.
+ *
+ * @param hint Věta navíc pro člověka. I v `--json` jde na chybový výstup, ne do
+ *   dokumentu: obálka chyby má zůstat tím, co poslalo API.
+ */
+function failFromApi(error: Failure, hint?: string): never {
+  if (jsonMode && !printed) printJson({ error });
+  else writeAll(2, `Chyba: ${error.code}: ${error.message}${formatDetails(error.details)}\n`);
+  // Taky synchronně: tahle věta říká, čím si dojít pro zaplacenou dávku, a
+  // `process.exit` hned za ní by ji do plné roury nedopsal.
+  if (hint) writeAll(2, `${hint}\n`);
+  process.exit(1);
 }
 
 /**
@@ -256,8 +380,7 @@ async function apiRequest(
       continue;
     }
 
-    const message = await describeFailure(response);
-    fail(hint ? `${message}\n${hint}` : message);
+    failFromApi(await describeFailure(response), hint);
   }
 }
 
@@ -332,11 +455,11 @@ async function cmdLogin(): Promise<void> {
     ? await readSecretFromTty(`Klíč pro ${API_URL} (nevypisuje se): `)
     : await readSecretFromPipe();
 
-  if (!key) fail("klíč je prázdný");
+  if (!key) fail("klíč je prázdný", "cli_usage");
   if (!key.startsWith("cf_")) {
     // Typicky se sem vloží něco jiného, třeba id jednotky. Ověření níž by to
     // odhalilo taky, ale až chybou ze serveru, která to neřekne tak jasně.
-    fail("tohle nevypadá jako API klíč, ten začíná na cf_");
+    fail("tohle nevypadá jako API klíč, ten začíná na cf_", "cli_usage");
   }
 
   // Ověřit dřív, než se uloží: uložený nefunkční klíč je horší než žádný,
@@ -348,24 +471,43 @@ async function cmdLogin(): Promise<void> {
   credentials[API_URL] = key;
   await writeCredentials(credentials);
 
+  // `login` nemá odpověď API, kterou by šlo propustit, takže dokument nese to
+  // jediné, co příkaz udělal. Cesta k souboru s klíčem v něm schválně není: do
+  // strojového výstupu, který končí v logu CI, nepatří ani nápověda, kde klíč
+  // hledat. A `accountingUnitCount`, ne `accountingUnits`: to jméno má v API
+  // pole objektů a číslo pod ním by z jednoho klíče udělalo dvě různé věci.
+  if (jsonMode) {
+    return printJson({
+      apiUrl: API_URL,
+      loggedIn: true,
+      accountingUnitCount: accountingUnits.length,
+    });
+  }
   console.log(`Přihlášeno k ${API_URL}, klíč uložen do ${configPath()}.`);
   console.log(`Účetní jednotky vypíše ctenifaktur units, klíč jich teď vidí ${accountingUnits.length}.`);
 }
 
 async function cmdLogout(): Promise<void> {
   const credentials = await readCredentials();
-  if (!(API_URL in credentials)) {
-    console.log(`K ${API_URL} nejste přihlášeni.`);
-    return;
+  const wasLoggedIn = API_URL in credentials;
+
+  if (wasLoggedIn) {
+    delete credentials[API_URL];
+    if (Object.keys(credentials).length === 0) {
+      await rm(configPath(), { force: true });
+    } else {
+      await writeCredentials(credentials);
+    }
   }
 
-  delete credentials[API_URL];
-  if (Object.keys(credentials).length === 0) {
-    await rm(configPath(), { force: true });
-  } else {
-    await writeCredentials(credentials);
-  }
-  console.log(`Odhlášeno od ${API_URL}. Klíč zneplatníte v aplikaci.`);
+  // Jeden dokument na obě větve: po odhlášení i bez přihlášení platí pro
+  // volajícího totéž. Rozdíl „nebyl jsi přihlášen" je věta pro člověka.
+  if (jsonMode) return printJson({ apiUrl: API_URL, loggedIn: false });
+  console.log(
+    wasLoggedIn
+      ? `Odhlášeno od ${API_URL}. Klíč zneplatníte v aplikaci.`
+      : `K ${API_URL} nejste přihlášeni.`,
+  );
 }
 
 interface Credits {
@@ -395,19 +537,30 @@ function documentsLabel(count: number): string {
  */
 async function cmdCredits(): Promise<void> {
   const state = await api<Credits>("/credits");
-  const renews = new Date(state.periodEnd).toLocaleDateString("cs-CZ");
 
-  console.log(`Zbývá ${documentsLabel(state.remaining)}.`);
-  console.log(`Z toho tarif ${state.plan}: ${state.planRemaining} (obnoví se ${renews}), kredity: ${state.credits}.`);
+  if (!jsonMode) {
+    const renews = new Date(state.periodEnd).toLocaleDateString("cs-CZ");
+    console.log(`Zbývá ${documentsLabel(state.remaining)}.`);
+    console.log(`Z toho tarif ${state.plan}: ${state.planRemaining} (obnoví se ${renews}), kredity: ${state.credits}.`);
+  }
+
   // U výpisů je to odhad: cena je za každé započaté tři strany a počet stran
   // zjistí server až při zpracování. Bez téhle věty by pětistránkový výpis
-  // vypadal jako jeden doklad.
-  console.log("U bankovních výpisů je to odhad, jejich cena se počítá po třech stranách.");
+  // vypadal jako jeden doklad. Platí to i pro dokument — z čísel v něm se to
+  // odvodit nedá — takže v `--json` ta věta nemizí, jen jde na chybový výstup.
+  note("U bankovních výpisů je to odhad, jejich cena se počítá po třech stranách.");
+
+  if (jsonMode) printJson(state);
 }
 
 async function cmdUnits(): Promise<void> {
-  const { accountingUnits } = await api<{ accountingUnits: AccountingUnit[] }>("/accounting-units");
+  const response = await api<{ accountingUnits: AccountingUnit[] }>("/accounting-units");
+  // Celá obálka, ne jen pole: `--json` má vracet to, co vrátilo API, a to je
+  // `{ "accountingUnits": … }`. Rozbalit ji tady by znamenalo, že volající
+  // dostane z CLI jiný tvar než z endpointu, na který se dívá v OpenAPI.
+  if (jsonMode) return printJson(response);
 
+  const { accountingUnits } = response;
   if (accountingUnits.length === 0) {
     console.log("Žádné účetní jednotky.");
     return;
@@ -573,14 +726,14 @@ async function cmdUpload(
   unitId?: string,
   idempotencyKey?: string,
 ): Promise<void> {
-  if (files.length === 0) fail("zadejte alespoň jeden soubor");
+  if (files.length === 0) fail("zadejte alespoň jeden soubor", "cli_usage");
 
   const descriptors = await Promise.all(
     files.map(async (path) => {
-      const info = await stat(path).catch(() => fail(`soubor neexistuje: ${path}`));
+      const info = await stat(path).catch(() => fail(`soubor neexistuje: ${path}`, "cli_file_not_found"));
       // Adresář projde `stat` bez potíží, takže bez téhle kontroly se za něj
       // stihne rezervovat kredit a teprve `readFile` spadne na EISDIR.
-      if (!info.isFile()) fail(`není to soubor: ${path}`);
+      if (!info.isFile()) fail(`není to soubor: ${path}`, "cli_file_not_found");
       const fileName = basename(path);
       return {
         path,
@@ -617,6 +770,7 @@ async function cmdUpload(
   if (prepared.uploads.length !== descriptors.length) {
     fail(
       `server vrátil ${prepared.uploads.length} adres na ${descriptors.length} souborů`,
+      "cli_unexpected",
     );
   }
   const mismatch = prepared.uploads.findIndex(
@@ -625,6 +779,7 @@ async function cmdUpload(
   if (mismatch !== -1) {
     fail(
       `adresa č. ${mismatch + 1} patří souboru ${prepared.uploads[mismatch].fileName}, ne ${descriptors[mismatch].fileName}`,
+      "cli_unexpected",
     );
   }
 
@@ -652,10 +807,13 @@ async function cmdUpload(
   if (uploaded === 0) {
     // Čekat na dávku, o které víme, že do ní nic nedorazilo, by znamenalo
     // sledovat ukazatel až do úklidu po 30 minutách. Kredit se vrátí sám.
-    fail("nenahrál se ani jeden soubor, kredity se vrátí automaticky");
+    fail("nenahrál se ani jeden soubor, kredity se vrátí automaticky", "cli_upload_failed");
   }
 
-  console.log(`Dávka ${prepared.batchId}, zpracovávám ${filesLabel(uploaded)}…`);
+  // Zahodit se to nesmí ani v `--json`: je to jediné místo, kde id dávky zazní
+  // hned — běh, který někdo po půl hodině zabije, je pak pořád dohledatelný
+  // přes `status`, místo aby se dávka nahrála a zaplatila podruhé.
+  note(`Dávka ${prepared.batchId}, zpracovávám ${filesLabel(uploaded)}…`);
   await pollUntilDone(prepared.batchId, failed);
 }
 
@@ -688,23 +846,33 @@ async function pollUntilDone(
       // `completed_with_failures` je taky neúspěch, jen částečný. Vracet 0 by
       // znamenalo, že cron nebo import kolem CLI považuje dávku, ve které se
       // část dokladů nezpracovala, za vyřízenou, a nikdo se o chybějící doklady
-      // nedozví. Výpis výš říká, který soubor to byl.
-      if (batch.status !== "completed") process.exit(1);
+      // nedozví. Výpis výš říká, který soubor to byl. Přes `exitCode`, ne
+      // `process.exit`: ten by proces ukončil dřív, než se dopíše stdout, a
+      // s ním by u velké dávky zmizela zaplacená id dokladů.
+      if (batch.status !== "completed") process.exitCode = 1;
       return;
     }
 
     if (notUploaded.size > 0) {
+      // Počítají se jen nahrání, která opravdu odešla. Bez té podmínky se
+      // nedoručené započítalo dvakrát — jednou do `settled`, podruhé odečtením
+      // od počtu — a jakmile ho úklid na serveru označil za `failed`, což je
+      // jeho běžný konec, čekání skončilo i pro soubor, který dorazil a zrovna
+      // se vytěžoval. Přesně to, co komentář nad funkcí slibuje, že nenastane.
       const settled = batch.uploads.filter(
-        (upload) => upload.status === "completed" || upload.status === "failed",
+        (upload) =>
+          !notUploaded.has(upload.uploadId) &&
+          (upload.status === "completed" || upload.status === "failed"),
       ).length;
       if (settled >= batch.uploads.length - notUploaded.size) {
         printBatch(batch, notUploaded);
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
     }
 
     if (Date.now() - started > TIMEOUT_MS) {
-      fail(`dávka ${batchId} se nedokončila do 30 minut, stav: ${batch.status}`);
+      fail(`dávka ${batchId} se nedokončila do 30 minut, stav: ${batch.status}`, "cli_timeout");
     }
     await sleep(5000);
   }
@@ -716,6 +884,11 @@ async function pollUntilDone(
  *   množiny by se hlásila jako rozpracovaná, přestože už nedorazí.
  */
 function printBatch(batch: BatchStatus, notUploaded: ReadonlySet<string> = new Set()): void {
+  // Odpověď serveru tak, jak přišla, jen s dopsaným tím, co ví zatím jen CLI.
+  // Per-soubor řádky na stderr se v tomhle režimu vynechávají: dokument je nese
+  // všechny, takže by je jen zdvojily.
+  if (jsonMode) return printJson(withNotUploaded(batch, notUploaded));
+
   for (const upload of batch.uploads) {
     if (upload.status === "completed") {
       console.log(`${upload.fileName}: ${upload.documentIds.join(", ")}`);
@@ -751,14 +924,60 @@ function printBatch(batch: BatchStatus, notUploaded: ReadonlySet<string> = new S
   );
 }
 
+/**
+ * Dávka tak, jak ji vidí server, plus to jediné, co ví jen CLI: nahrání, jehož
+ * `PUT` do úložiště nedorazil.
+ *
+ * Server je vede jako `pending`, dokud jim po vypršení lhůty nedopíše
+ * `upload_not_received` úklid. Dopsat mu to o půl hodiny dřív není bohatší tvar
+ * než odpověď API: je to tatáž hodnota z téhož číselníku, jen dřív. Textový
+ * výpis dělá totéž od začátku, jen slovy.
+ */
+function withNotUploaded(batch: BatchStatus, notUploaded: ReadonlySet<string>): BatchStatus {
+  // Přepisují se jen nahrání, o kterých server ještě nerozhodl. Když je uzavřel
+  // sám, ví toho víc než my: `completed` znamená, že soubor nakonec dorazil —
+  // třeba se povedl `PUT`, jehož odpověď se cestou ztratila — a přepsat ho na
+  // `failed` by zahodilo id dokladů, které vznikly a jsou zaplacené. `failed`
+  // zase nese vlastní důvod, přesnější než naše domněnka. Textový výpis dává
+  // hotovému nahrání přednost úplně stejně.
+  const stuck = new Set(
+    batch.uploads
+      .filter((upload) => notUploaded.has(upload.uploadId) && RUNNING.has(upload.status))
+      .map((upload) => upload.uploadId),
+  );
+  if (stuck.size === 0) return batch;
+
+  const movedFrom = (status: string) =>
+    batch.uploads.filter((upload) => stuck.has(upload.uploadId) && upload.status === status).length;
+
+  return {
+    ...batch,
+    uploads: batch.uploads.map((upload) =>
+      stuck.has(upload.uploadId)
+        ? { ...upload, status: "failed", errorCode: "upload_not_received" }
+        : upload,
+    ),
+    // `counts` musí jít s tím: dokument, ve kterém je `failed: 0` a přitom
+    // nahrání se stavem `failed`, si odporuje sám se sebou, a `counts.failed`
+    // je ta nejpřirozenější otázka „selhalo něco?". Server takovou dvojici
+    // nikdy nepošle, úklid přepisuje obojí naráz.
+    counts: {
+      ...batch.counts,
+      pending: (batch.counts.pending ?? 0) - movedFrom("pending"),
+      processing: (batch.counts.processing ?? 0) - movedFrom("processing"),
+      failed: (batch.counts.failed ?? 0) + stuck.size,
+    },
+  };
+}
+
 async function cmdStatus(batchId?: string): Promise<void> {
-  if (!batchId) fail("zadejte id dávky");
+  if (!batchId) fail("zadejte id dávky", "cli_usage");
   const batch = await api<BatchStatus>(`/batches/${batchId}`);
   printBatch(batch);
   // Stejná úmluva jako u `upload`: hotová dávka, ve které něco selhalo, nesmí
   // skriptu kolem CLI vyjít jako v pořádku. Rozpracovaná dávka selhání není,
   // proto se nula vrací i pro `pending` a `processing`.
-  if (TERMINAL.has(batch.status) && batch.status !== "completed") process.exit(1);
+  if (TERMINAL.has(batch.status) && batch.status !== "completed") process.exitCode = 1;
 }
 
 async function cmdExport(
@@ -769,7 +988,10 @@ async function cmdExport(
 ): Promise<void> {
   const isStatement = kind === "statement";
   if (ids.length === 0) {
-    fail(isStatement ? "zadejte alespoň jedno id výpisu" : "zadejte alespoň jedno id dokladu");
+    fail(
+      isStatement ? "zadejte alespoň jedno id výpisu" : "zadejte alespoň jedno id dokladu",
+      "cli_usage",
+    );
   }
 
   // Doklady i výpisy mají vlastní endpoint a vlastní jméno pole. Poslat id
@@ -794,11 +1016,20 @@ async function cmdExport(
   const target = output ?? (suggested ? basename(suggested) : `export-${format}`);
 
   await writeFile(target, Buffer.from(await response.arrayBuffer()));
+
+  // Export nemá odpověď, kterou by šlo propustit: endpoint vrací bajty souboru,
+  // ne JSON. Dokument proto nese jen ten jediný fakt, který operace vyrobila,
+  // tedy kam se zapsalo — `format` a id by jen vrátily volajícímu jeho vlastní
+  // argumenty.
+  if (jsonMode) return printJson({ file: target });
   console.log(target);
 }
 
 function usage(): void {
-  console.log(`Čtení Faktur CLI
+  // Přes `note`, takže v `--json` jde na chybový výstup: `ctenifaktur --json`
+  // bez příkazu je přesně to, co udělá obal, který si vlajku přidává naslepo,
+  // a celá nápověda v češtině místo JSONu je pro něj horší odpověď než prázdno.
+  note(`Čtení Faktur CLI
 Nahrání dokladů a stažení exportů z příkazové řádky.
 
 Příkazy:
@@ -850,6 +1081,41 @@ Příkazy:
     Oba formáty vyžadují číslo účtu. Sestava z platební brány ho na sobě nemá,
     takže u ní export projde teprve po doplnění účtu v aplikaci.
 
+Přepínač pro celé CLI:
+  --json
+    Strojově čitelný výstup. U každého příkazu je pak na standardním výstupu
+    právě jeden platný JSON dokument a nic jiného; průběh, varování i rady jdou
+    na chybový výstup, včetně řádku Dávka <id>, kterým se běh zabitý časovým
+    limitem dohledá zpátky. Přepínač smí stát kdekoli, před příkazem i za jeho
+    argumenty.
+
+    Obsahem dokumentu je tatáž odpověď, kterou vrací veřejné /api/v1, propuštěná
+    beze změny — i s poli, která samo CLI nečte:
+      units                vrací { "accountingUnits": [...] }
+      credits              zůstatek tak, jak přišel
+      status, upload,      celou dávku: status, counts a uploads[] s poli
+      upload-statement     documentIds, incomplete a errorCode
+      export,              { "file": "..." }; ty endpointy vracejí soubor,
+      export-statement     ne JSON, takže dokument nese jen to, kam se zapsalo
+      login                { "apiUrl", "loggedIn": true, "accountingUnitCount" }
+      logout               { "apiUrl", "loggedIn": false }
+    Nahrání, jehož odeslání do úložiště selhalo, je v dávce označeno jako
+    failed s errorCode upload_not_received a započítáno v counts, tedy tak, jak
+    ho po vypršení lhůty označí i server.
+
+    Chyba je taky dokument, a to obálka z API:
+      { "error": { "code": "...", "message": "...", "details": ... } }
+    Odmítnutý export přes mixed_accounting_units tak jde rozdělit podle details,
+    ne podle textu. Kódy mají tři původy: z API (rate_limited, not_found,
+    insufficient_scope a další, viz OpenAPI), http_<kód> u odpovědi, která
+    obálku nenese vůbec (typicky 502 od brány před aplikací), a cli_ u chyb,
+    které vzniknou tady a ne na serveru (cli_usage, cli_not_logged_in,
+    cli_file_not_found, cli_upload_failed, cli_timeout, cli_network,
+    cli_unexpected).
+
+    Návratové kódy se nemění a bez přepínače se výpis nemění taky. Výjimkou je
+    tahle nápověda: s --json jde na chybový výstup.
+
 Příklad:
   ctenifaktur upload doklady/*.pdf --unit 6a5b41d8e7c204f93a1b8e62
   ctenifaktur export e48428a7-52af-4dc2-981f-dfba661a71ae \\
@@ -857,6 +1123,8 @@ Příklad:
   ctenifaktur upload-statement vypis-07.pdf
   ctenifaktur export-statement 0f9c1d64-1f2f-4d0e-9a1c-6b1d2b7e5a11 \\
       --format gpc --out vypis.gpc
+  ctenifaktur --json status 7da58615-dcac-4a15-9443-d836b7d8cec7 \\
+      | jq -r '.uploads[] | select(.errorCode) | "\\(.fileName) \\(.errorCode)"'
 
 Přihlášení:
   Klíč vydáte v aplikaci v sekci Tým a nastavení, část API klíče, a předáte ho
@@ -899,10 +1167,33 @@ function takeFlag(args: string[], name: string): string | undefined {
   // Bez téhle kontroly by `--unit --idempotency-key klic` nastavilo jednotku na
   // řetězec `--idempotency-key` a klíč zahodilo, obojí tiše.
   if (value === undefined || value.startsWith("--")) {
-    fail(`chybí hodnota pro --${name}`);
+    fail(`chybí hodnota pro --${name}`, "cli_usage");
   }
   args.splice(index, 2);
   return value;
+}
+
+/**
+ * Odloupne přepínač bez hodnoty. Na rozdíl od `takeFlag` za ním nic
+ * nenásleduje, takže se jen vyjme, ať stál kdekoli: `--json` má fungovat před
+ * příkazem i za jeho argumenty.
+ */
+function takeSwitch(args: string[], name: string): boolean {
+  let found = false;
+  for (;;) {
+    // Vynechá se výskyt hned za jiným přepínačem: tam stojí na místě hodnoty a
+    // odloupnout ho znamená, že `takeFlag` místo chybějící hodnoty spolkne
+    // argument za ním. `upload --idempotency-key --json a.pdf b.pdf` by pak
+    // poslalo `a.pdf` jako klíč, nahrálo jediný soubor a skončilo nulou —
+    // účtovaný příkaz, který tiše udělá něco jiného, než co mu kdo zadal.
+    // Když zůstane stát, ohlásí se chybějící hodnota, jak se má.
+    const index = args.findIndex(
+      (arg, i) => arg === `--${name}` && !(i > 0 && args[i - 1].startsWith("--")),
+    );
+    if (index === -1) return found;
+    args.splice(index, 1);
+    found = true;
+  }
 }
 
 /**
@@ -915,11 +1206,15 @@ function takeFlag(args: string[], name: string): string | undefined {
  */
 function rejectUnknownFlags(args: string[]): void {
   const unknown = args.find((arg) => arg.startsWith("--"));
-  if (unknown) fail(`neznámý přepínač: ${unknown}`);
+  if (unknown) fail(`neznámý přepínač: ${unknown}`, "cli_usage");
 }
 
 async function main(): Promise<void> {
-  const [command, ...rest] = process.argv.slice(2);
+  // Odloupne se z celých argumentů, ještě než se z nich vezme příkaz: jinak by
+  // `ctenifaktur --json status <id>` hledalo příkaz jménem `--json`.
+  const args = process.argv.slice(2);
+  jsonMode = takeSwitch(args, "json");
+  const [command, ...rest] = args;
 
   if (!command || command === "help" || command === "--help") {
     usage();
@@ -936,7 +1231,7 @@ async function main(): Promise<void> {
   // vnutit svůj, aniž by se v nich muselo přihlašovat.
   apiKey = process.env.CF_API_KEY || (await readCredentials())[API_URL];
   if (!apiKey) {
-    fail(`nejste přihlášeni k ${API_URL}, spusťte ctenifaktur login`);
+    fail(`nejste přihlášeni k ${API_URL}, spusťte ctenifaktur login`, "cli_not_logged_in");
   }
 
   switch (command) {
@@ -967,7 +1262,7 @@ async function main(): Promise<void> {
       // Dřív než hlášení o chybějícím --format: u překlepu (`--frmat gpc`) je
       // jméno toho přepínače užitečnější odpověď než „chybí --format".
       rejectUnknownFlags(rest);
-      if (!format) fail("chybí --format");
+      if (!format) fail("chybí --format", "cli_usage");
       return cmdExport(
         rest,
         command === "export-statement" ? "statement" : "document",
@@ -976,7 +1271,7 @@ async function main(): Promise<void> {
       );
     }
     default:
-      fail(`neznámý příkaz: ${command}`);
+      fail(`neznámý příkaz: ${command}`, "cli_usage");
   }
 }
 
@@ -989,16 +1284,19 @@ async function main(): Promise<void> {
 main().catch((error: unknown) => {
   const name = error instanceof Error ? error.name : "";
   if (name === "AbortError" || name === "TimeoutError") {
-    fail(`server neodpověděl včas: ${API_URL}`);
+    fail(`server neodpověděl včas: ${API_URL}`, "cli_timeout");
   }
   // `fetch` hlásí každý výpadek spojení jako `TypeError: fetch failed` a to
   // konkrétní (ECONNREFUSED, ENOTFOUND) schová do `cause`. Bez ní by hláška
   // neřekla, jestli je vypnutá síť, nebo jen překlep v adrese.
   if (error instanceof TypeError && error.message === "fetch failed") {
     const detail = error.cause instanceof Error ? `: ${error.cause.message}` : "";
-    fail(`spojení se serverem selhalo${detail} (${API_URL})`);
+    fail(`spojení se serverem selhalo${detail} (${API_URL})`, "cli_network");
   }
   // Všechno ostatní je chyba na naší straně, třeba nezapsatelný cílový soubor.
   // Tvrdit i u ní, že selhalo spojení, by poslalo hledání úplně jinam.
-  fail(`neočekávaná chyba: ${error instanceof Error ? error.message : String(error)}`);
+  fail(
+    `neočekávaná chyba: ${error instanceof Error ? error.message : String(error)}`,
+    "cli_unexpected",
+  );
 });
