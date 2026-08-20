@@ -75,6 +75,20 @@ const API_TIMEOUT_MS = 60_000;
 const PUT_TIMEOUT_MS = 10 * 60_000;
 
 /**
+ * Kolikátý pokus po `429` je poslední. Limit je na klíč a minutu, takže ho
+ * vyčerpá druhý běh vedle toho našeho, ne my sami: čekání na dávku se ptá
+ * jednou za pět sekund. Vzdát se hned by znamenalo shodit běh nad dávkou,
+ * která je už zaplacená a na serveru běží dál.
+ */
+const RATE_LIMIT_ATTEMPTS = 5;
+
+/**
+ * Strop na jedno čekání. Okno limitu je minuta, takže delší čekání by znamenalo
+ * jen to, že server poslal nesmyslné `Retry-After`.
+ */
+const RATE_LIMIT_MAX_WAIT_MS = 90_000;
+
+/**
  * Klíč jde v hlavičce `Authorization`, takže `http://` by ho poslalo v čitelné
  * podobě komukoli na trase. Povolujeme ho jen na localhostu, kde se s CLI dělá
  * vývoj a kde po drátě nic neteče.
@@ -126,44 +140,129 @@ interface ApiError {
  * navěsit větvení; věta je pro člověka a měnit se může.
  */
 async function describeFailure(response: Response): Promise<string> {
-  // Kód patří i sem, i když ho tělo odpovědi u 429 nenese. Bez něj by jediná
-  // chyba, u které dokumentace slibuje strojově čitelný kód před dvojtečkou,
-  // byla zrovna ta, kde ho nenajde.
-  if (response.status === 429) {
+  const body = (await response.json().catch(() => ({}))) as ApiError;
+
+  // Náš 429 kód v těle nese, ale 429 od brány před aplikací ne. Bez tohohle by
+  // jediná chyba, u které dokumentace slibuje strojově čitelný kód před
+  // dvojtečkou, byla zrovna ta, kde ho volající nenajde.
+  if (response.status === 429 && !body.error?.code) {
     const retry = response.headers.get("retry-after");
     return `rate_limited: překročen limit požadavků${retry ? `, zkuste to za ${retry} s` : ""}`;
   }
 
-  const body = (await response.json().catch(() => ({}))) as ApiError;
   const code = body.error?.code ?? `http_${response.status}`;
   const detail = body.error?.message ?? response.statusText;
-  return `${code}: ${detail}`;
+  return `${code}: ${detail}${formatDetails(body.error?.details)}`;
+}
+
+/**
+ * Detaily z chybové odpovědi jako řádky pod hlášku.
+ *
+ * Dokumentace na ně u odmítnutí přímo posílá: smíšenou dávku má volající
+ * rozdělit podle `details.documents[]`, export výpisů podle
+ * `details.statements[]`. Zahodit je tedy znamená, že tu radu přes CLI nejde
+ * uposlechnout, i když ji server poslal.
+ */
+function formatDetails(details: unknown): string {
+  if (details === null || details === undefined) return "";
+
+  const lines = Array.isArray(details)
+    ? details.map((item) => `  - ${describeDetail(item)}`)
+    : typeof details === "object"
+      ? Object.entries(details as Record<string, unknown>).flatMap(([key, value]) =>
+          Array.isArray(value)
+            ? [`  ${key}:`, ...value.map((item) => `    - ${describeDetail(item)}`)]
+            : [`  ${key}: ${describeDetail(value)}`],
+        )
+      : [`  ${describeDetail(details)}`];
+
+  return lines.length > 0 ? `\n${lines.join("\n")}` : "";
+}
+
+/**
+ * Jeden údaj na řádek. Objekt se rozepíše na `klíč=hodnota`, ne jako JSON: tyhle
+ * řádky se čtou okem a grepují ve skriptu, a `id=… ico=…` je na obojí lepší než
+ * uvozovky a složené závorky.
+ */
+function describeDetail(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value !== "object") return String(value);
+  if (Array.isArray(value)) return value.map(describeDetail).join(", ");
+  return Object.entries(value as Record<string, unknown>)
+    .map(([key, inner]) => `${key}=${inner === null || typeof inner !== "object" ? String(inner) : JSON.stringify(inner)}`)
+    .join(" ");
+}
+
+/**
+ * Jak dlouho čekat po `429`. Přednost má `Retry-After` od serveru, ten ví, kdy
+ * se okno limitu překlopí; bez něj se čeká exponenciálně. Vteřina dole drží
+ * `Retry-After: 0` od toho, aby se z opakování stala smyčka bez čekání.
+ */
+function retryAfterMs(response: Response, attempt: number): number {
+  const header = response.headers.get("retry-after");
+  const clamp = (ms: number) => Math.min(Math.max(ms, 1000), RATE_LIMIT_MAX_WAIT_MS);
+  if (!header) return clamp(2 ** attempt * 1000);
+
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return clamp(seconds * 1000);
+
+  // RFC dovoluje i datum. Přijde od brány, naše API posílá vteřiny.
+  const at = Date.parse(header);
+  if (Number.isFinite(at)) return clamp(at - Date.now());
+
+  return clamp(2 ** attempt * 1000);
 }
 
 /**
  * Jedno volání API: autorizace, kontrola chyby, syrová odpověď. Export si ji
  * bere takhle, protože nevrací JSON, ale bajty souboru.
+ *
+ * `429` se přečká a volání zopakuje. Limit je dočasný stav, ne chyba požadavku,
+ * a opakovat je bezpečné: čtení jsou idempotentní ze své podstaty a zakládání
+ * dávky drží `Idempotency-Key`, který se mezi pokusy nemění.
+ *
+ * @param hint Věta navíc, když ani opakování nepomůže. Slouží k tomu, aby po
+ *   vyčerpaném limitu uprostřed čekání na dávku uživatel věděl, že zaplacená
+ *   dávka běží dál, a čím si pro výsledek dojít.
  */
-async function apiRequest(path: string, init: RequestInit = {}): Promise<Response> {
-  const response = await fetchWithTimeout(
-    `${API_URL}/api/v1${path}`,
-    {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        ...(init.body ? { "Content-Type": "application/json" } : {}),
-        ...init.headers,
+async function apiRequest(
+  path: string,
+  init: RequestInit = {},
+  hint?: string,
+): Promise<Response> {
+  for (let attempt = 1; ; attempt++) {
+    const response = await fetchWithTimeout(
+      `${API_URL}/api/v1${path}`,
+      {
+        ...init,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          ...(init.body ? { "Content-Type": "application/json" } : {}),
+          ...init.headers,
+        },
       },
-    },
-    API_TIMEOUT_MS,
-  );
+      API_TIMEOUT_MS,
+    );
 
-  if (!response.ok) fail(await describeFailure(response));
-  return response;
+    if (response.ok) return response;
+
+    if (response.status === 429 && attempt < RATE_LIMIT_ATTEMPTS) {
+      const wait = retryAfterMs(response, attempt);
+      // Na chybový výstup, aby na stdout zůstaly jen řádky s id.
+      console.error(
+        `Limit požadavků vyčerpán, čekám ${Math.ceil(wait / 1000)} s (pokus ${attempt} z ${RATE_LIMIT_ATTEMPTS - 1}).`,
+      );
+      await sleep(wait);
+      continue;
+    }
+
+    const message = await describeFailure(response);
+    fail(hint ? `${message}\n${hint}` : message);
+  }
 }
 
-async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await apiRequest(path, init);
+async function api<T>(path: string, init: RequestInit = {}, hint?: string): Promise<T> {
+  const response = await apiRequest(path, init, hint);
   return response.json() as Promise<T>;
 }
 
@@ -540,8 +639,13 @@ async function pollUntilDone(
   const started = Date.now();
   const TIMEOUT_MS = 30 * 60 * 1000;
 
+  // Dávka je v tuhle chvíli zaplacená a běží na serveru, takže každý konec
+  // tady je konec čekání, ne konec zpracování. Bez téhle věty vypadá vyčerpaný
+  // limit jako ztracená dávka a uživatel ji nahraje a zaplatí podruhé.
+  const hint = `Dávka běží na serveru dál, výsledek zjistíte příkazem: ctenifaktur status ${batchId}`;
+
   for (;;) {
-    const batch = await api<BatchStatus>(`/batches/${batchId}`);
+    const batch = await api<BatchStatus>(`/batches/${batchId}`, {}, hint);
     if (TERMINAL.has(batch.status)) {
       printBatch(batch, notUploaded);
       // `completed_with_failures` je taky neúspěch, jen částečný. Vracet 0 by
@@ -729,6 +833,12 @@ Návratové kódy:
 Limity:
   25 MB na soubor, 300 souborů na dávku, 500 dokladů na jeden export dokladů,
   100 výpisů na jeden export výpisů.
+
+Limit požadavků:
+  Počítá se na klíč a minutu. Když se vyčerpá, CLI počká podle hlavičky
+  Retry-After a zkusí to znovu. Když ani opakování nestačí, běh skončí chybou,
+  ale zaplacená dávka běží na serveru dál a dojdete si pro ni příkazem
+  ctenifaktur status <id-dávky>.
 
 Opakované spuštění:
   Ze skriptu nebo z cronu předejte vlastní --idempotency-key a při opakování

@@ -92,6 +92,8 @@ If `upload` is interrupted, the batch keeps running on the server. Pick it back 
 
 `ctenifaktur --help` documents every flag, the limits and the exit codes.
 
+The rate limit is counted per key per minute. When it runs out the CLI waits for `Retry-After` and retries, and if the limit still holds, the run ends by printing the `ctenifaktur status <batch-id>` command to pick the batch up with, because the batch is already paid for and keeps running on the server. A refusal that carries `details`, such as a mixed-unit export or a validation error, prints them line by line, so the advice to split the batch by unit can actually be followed.
+
 > The CLI speaks Czech, like the rest of the product and its users. Error codes are the exception: the `code` before the colon is English and stable enough to branch on, the prose after it is not.
 
 ## AI agent skill

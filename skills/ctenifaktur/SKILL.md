@@ -41,7 +41,9 @@ tool timeout or a dropped connection kills it more often than any other
 command. The batch keeps running on the server regardless. Recover
 with `ctenifaktur status <batch-id>`, using the batch id from the `Dávka …`
 line. Re-running `upload` extracts and bills everything a second time, unless
-you reuse the exact same `--idempotency-key`.
+you reuse the exact same `--idempotency-key`. A rate limit mid-batch is not one
+of these cases: the CLI waits out `Retry-After` and retries, and if the limit
+still holds it ends by printing the `status` command to recover with.
 
 **Exit `1` does not mean nothing worked.** A batch that ends
 `completed_with_failures` also exits `1`, on purpose, so scripts cannot mistake
@@ -67,8 +69,9 @@ user has to issue a new one.
 
 **One accounting unit per export.** Applies to documents, not to statements.
 The file carries one IČO. Mixing units is
-rejected with `mixed_accounting_units`; split the ids by unit and run `export`
-once per unit. `--format isdoc` returns a `.isdoc` file for a single document
+rejected with `mixed_accounting_units`, and the refusal lists every document
+with its `accountingUnitId` and `ico` on its own line underneath — split by
+those lines and run `export` once per unit. `--format isdoc` returns a `.isdoc` file for a single document
 but a ZIP for several, so do not hand `--out` an `.isdoc` name for a
 multi-document export.
 

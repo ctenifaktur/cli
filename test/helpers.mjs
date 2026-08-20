@@ -33,8 +33,22 @@ export const CLI = join(here, "..", "dist", "ctenifaktur.js");
  *   default 200. Use a 4xx to make an upload fail without any retry wait.
  * @param options.exportFile Bytes returned by either export endpoint, with the
  *   file name the CLI is supposed to take from `Content-Disposition`.
+ * @param options.throttle How many first calls per endpoint (`batches`,
+ *   `documents`, `export`) answer `429` with `Retry-After: 1` before the real
+ *   response. `Infinity` never lets up. One second keeps the waiting real but
+ *   short enough for the suite.
+ * @param options.apiError `{ path, status, body }` — one endpoint answers this
+ *   error instead of its normal response, so a test can drive the CLI's error
+ *   rendering with a real body.
  */
-export async function startStub({ batches = [], documents, putStatus = {}, exportFile } = {}) {
+export async function startStub({
+  batches = [],
+  documents,
+  putStatus = {},
+  exportFile,
+  throttle = {},
+  apiError,
+} = {}) {
   const received = {
     batchPolls: 0,
     puts: [],
@@ -44,8 +58,11 @@ export async function startStub({ batches = [], documents, putStatus = {}, expor
     preparedPaths: [],
     /** `{ path, body }` per export call, so a test can assert the field name. */
     exports: [],
+    /** How many calls were answered with a 429. */
+    throttled: 0,
   };
   let base = "";
+  const throttleLeft = { ...throttle };
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
@@ -54,7 +71,28 @@ export async function startStub({ batches = [], documents, putStatus = {}, expor
       res.end(JSON.stringify(body));
     };
 
+    /** Consumes one throttle credit for `kind`; true = answer 429 this time. */
+    const throttled = (kind) => {
+      if (!throttleLeft[kind]) return false;
+      if (throttleLeft[kind] !== Infinity) throttleLeft[kind] -= 1;
+      received.throttled++;
+      req.resume();
+      res.writeHead(429, { "Content-Type": "application/json", "Retry-After": "1" });
+      res.end(
+        JSON.stringify({
+          error: { code: "rate_limited", message: "Překročen limit 60 požadavků za minutu." },
+        }),
+      );
+      return true;
+    };
+
+    if (apiError && url.pathname === apiError.path) {
+      req.resume();
+      return json(apiError.status, apiError.body);
+    }
+
     if (req.method === "GET" && url.pathname.startsWith("/api/v1/batches/")) {
+      if (throttled("batches")) return;
       req.resume();
       const snapshot = batches[Math.min(received.batchPolls, batches.length - 1)];
       received.batchPolls++;
@@ -66,6 +104,7 @@ export async function startStub({ batches = [], documents, putStatus = {}, expor
       (url.pathname === "/api/v1/documents/export" ||
         url.pathname === "/api/v1/bank-statements/export")
     ) {
+      if (throttled("export")) return;
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       received.exports.push({
@@ -83,6 +122,7 @@ export async function startStub({ batches = [], documents, putStatus = {}, expor
       req.method === "POST" &&
       (url.pathname === "/api/v1/documents" || url.pathname === "/api/v1/bank-statements")
     ) {
+      if (throttled("documents")) return;
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       received.idempotencyKeys.push(req.headers["idempotency-key"]);
