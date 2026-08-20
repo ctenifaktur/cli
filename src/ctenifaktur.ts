@@ -1159,8 +1159,17 @@ Dokumentace:
   https://ctenifaktur.cz/api/v1/openapi.json`);
 }
 
+/**
+ * Přepínače, za kterými stojí hodnota. `takeSwitch` je musí znát, aby
+ * neodloupl přepínač stojící na jejím místě. Jméno si z toho seznamu bere
+ * i `takeFlag`, takže nový přepínač s hodnotou neprojde kompilací, dokud se
+ * sem nedopíše — a seznam nemůže tiše zestárnout.
+ */
+const VALUE_FLAGS = ["unit", "idempotency-key", "format", "out"] as const;
+const VALUE_FLAG_ARGS = new Set<string>(VALUE_FLAGS.map((name) => `--${name}`));
+
 /** Odloupne `--jméno hodnota` z argumentů a vrátí zbytek jako poziční. */
-function takeFlag(args: string[], name: string): string | undefined {
+function takeFlag(args: string[], name: (typeof VALUE_FLAGS)[number]): string | undefined {
   const index = args.indexOf(`--${name}`);
   if (index === -1) return undefined;
   const value = args[index + 1];
@@ -1181,14 +1190,17 @@ function takeFlag(args: string[], name: string): string | undefined {
 function takeSwitch(args: string[], name: string): boolean {
   let found = false;
   for (;;) {
-    // Vynechá se výskyt hned za jiným přepínačem: tam stojí na místě hodnoty a
-    // odloupnout ho znamená, že `takeFlag` místo chybějící hodnoty spolkne
-    // argument za ním. `upload --idempotency-key --json a.pdf b.pdf` by pak
-    // poslalo `a.pdf` jako klíč, nahrálo jediný soubor a skončilo nulou —
+    // Vynechá se výskyt stojící hned za přepínačem s hodnotou: tam je na místě
+    // té hodnoty a odloupnout ho znamená, že `takeFlag` místo chybějící hodnoty
+    // spolkne argument za ním. `upload --idempotency-key --json a.pdf b.pdf` by
+    // pak poslalo `a.pdf` jako klíč, nahrálo jediný soubor a skončilo nulou —
     // účtovaný příkaz, který tiše udělá něco jiného, než co mu kdo zadal.
-    // Když zůstane stát, ohlásí se chybějící hodnota, jak se má.
+    // Když zůstane stát, ohlásí se chybějící hodnota, jak se má. Rozhoduje
+    // `VALUE_FLAG_ARGS`, ne prosté `--` na začátku: za přepínačem bez hodnoty
+    // žádná hodnota nechybí, takže `--help --json` se má odloupnout a psát
+    // nápovědu na stderr, kam pod `--json` patří všechno kromě dokumentu.
     const index = args.findIndex(
-      (arg, i) => arg === `--${name}` && !(i > 0 && args[i - 1].startsWith("--")),
+      (arg, i) => arg === `--${name}` && !(i > 0 && VALUE_FLAG_ARGS.has(args[i - 1])),
     );
     if (index === -1) return found;
     args.splice(index, 1);

@@ -117,7 +117,8 @@ The document is the response from the public `/api/v1`, passed through rather th
 |---|---|
 | `units` | `{"accountingUnits":[…]}`, verbatim from `GET /accounting-units` |
 | `credits` | the balance object, verbatim |
-| `status`, `upload`, `upload-statement` | the batch, verbatim from `GET /batches/{id}` — `status`, `counts`, and `uploads[]` with `documentIds`, `incomplete` and `errorCode` |
+| `status` | the batch, verbatim from `GET /batches/{id}` — `status`, `counts`, and `uploads[]` with `documentIds`, `incomplete` and `errorCode` |
+| `upload`, `upload-statement` | that same batch in that same shape, with the one overlay described below |
 | `export`, `export-statement` | `{"file":"import.xml"}` — the endpoint answers with the bytes of a file, not with JSON, so the only fact the run produced is where it wrote |
 | `login` | `{"apiUrl":"…","loggedIn":true,"accountingUnitCount":1}` |
 | `logout` | `{"apiUrl":"…","loggedIn":false}` |

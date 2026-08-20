@@ -37,10 +37,12 @@ global switch, it works on every command, and with it standard output is exactly
 one JSON document and nothing else — progress and warnings go to stderr. Read
 the prose mode only when you are showing the output to the user.
 
-For `units`, `credits`, `status` and `upload` the document is the `/api/v1`
-response passed through unchanged, so it is the shape the OpenAPI document
-specifies. `export`, `login` and `logout` have no API response to pass through —
-those three documents are the CLI's own and are described below. `--help` is the
+For `units`, `credits`, `status`, `upload` and `upload-statement` the document
+is the `/api/v1` response passed through, so it is the shape the OpenAPI
+document specifies — with one exception on the two upload commands, which mark
+the files that never reached storage themselves; see below. `export`,
+`export-statement`, `login` and `logout` have no API response to pass through,
+so those documents are the CLI's own and are described below. `--help` is the
 one command with no document at all: it stays prose and goes to stderr.
 
 ## Rules
@@ -132,10 +134,13 @@ because the batch otherwise reads as finished.
   "id": "7da58615-…", "kind": "documents", "status": "completed_with_failures",
   "counts": { "total": 3, "pending": 0, "processing": 0, "completed": 2, "failed": 1 },
   "uploads": [
-    { "fileName": "faktura-01.pdf", "status": "completed", "documentIds": ["e48428a7-…"] },
-    { "fileName": "sken.jpg", "status": "completed", "documentIds": ["af668802-…"],
+    { "uploadId": "0b9c…", "fileName": "faktura-01.pdf", "status": "completed",
+      "documentIds": ["e48428a7-…"] },
+    { "uploadId": "4d17…", "fileName": "sken.jpg", "status": "completed",
+      "documentIds": ["af668802-…"],
       "incomplete": { "discarded": 2, "unparsed": 1 } },   // same warning as the `neúplné` line
-    { "fileName": "uctenka.pdf", "status": "failed", "documentIds": [],
+    { "uploadId": "7a62…", "fileName": "uctenka.pdf", "status": "failed",
+      "documentIds": [],
       "errorCode": "source_rejected" }                     // same code as the brackets
   ]
 }
@@ -177,10 +182,12 @@ stderr — capture stderr, because the document carries the id only inside the
 Czech `message`. On any other command they just mean the request did not get
 through, and there is no batch id to recover with; retry the command.
 
-There is no JSON export format, and asking for one is a dead end: extracted
-document data leaves the service only as ISDOC, Pohoda or Money S3. If the user
-wants an analysis over the invoice contents, export the documents and read that
-file. `--json` tells you what happened to a batch, not what is on an invoice.
+There is no JSON export format for the contents of a document, and asking for
+one is a dead end: extracted document data leaves the service only as ISDOC,
+Pohoda or Money S3. `export --json` itself works, it just answers with where the
+file landed. If the user wants an analysis over the invoice contents, export the
+documents and read that file. `--json` tells you what happened to a batch, not
+what is on an invoice.
 
 ## Beyond the CLI
 

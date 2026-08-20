@@ -643,15 +643,20 @@ describe("--json: the flag itself", () => {
   test("keeps the help as prose, but off stdout", async () => {
     // A wrapper that appends `--json` to whatever it was given runs
     // `ctenifaktur --json` with no command sooner or later, and the whole Czech
-    // help text on stdout would break the one promise the flag makes.
+    // help text on stdout would break the one promise the flag makes. The
+    // appended order is the one such a wrapper actually produces, and it is
+    // the one that used to slip through: `--json` sat behind another `--`
+    // argument, which the value-position rule read as a value.
     const stub = await startStub();
 
     const help = await runCli(["--json", "--help"], stub);
+    const appended = await runCli(["--help", "--json"], stub);
     const bare = await runCli(["--json"], stub);
+    const twice = await runCli(["--json", "--help", "--json"], stub);
     const human = await runCli(["--help"], stub);
     await stub.close();
 
-    for (const result of [help, bare]) {
+    for (const result of [help, appended, bare, twice]) {
       assert.equal(result.code, 0);
       assert.equal(result.stdout, "");
       assert.match(result.stderr, /^Čtení Faktur CLI/);
