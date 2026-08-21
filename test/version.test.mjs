@@ -36,11 +36,14 @@ describe("version", () => {
     assert.equal(result.stdout.trimEnd().split("\n").length, 1);
   });
 
-  test("answers even when CF_API_URL is unusable", async () => {
-    // Nothing here talks to the API, so the guard that refuses a non-https
-    // address must not run first: a broken CF_API_URL is one of the reasons
-    // somebody asks which build they are on in the first place.
-    const result = await runCli(["--version"], { env: { CF_API_URL: "ne-adresa" } });
+  test("answers with no key and an unusable CF_API_URL", async () => {
+    // Nothing here talks to the API, so neither the guard that refuses a
+    // non-https address nor the login check may run first. Both are reasons
+    // somebody asks which build they are on in the first place, and the empty
+    // key matters because `runCli` otherwise supplies one.
+    const result = await runCli(["--version"], {
+      env: { CF_API_URL: "ne-adresa", CF_API_KEY: "" },
+    });
 
     assert.equal(result.code, 0);
     assert.equal(result.stdout, `${manifest.version}\n`);
