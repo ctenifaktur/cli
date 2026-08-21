@@ -55,6 +55,7 @@ ctenifaktur status <batch-id>
 ctenifaktur export <document-id...> --format <isdoc|pohoda|money-s3> [--out <file>]
 ctenifaktur export-statement <statement-id...> --format <gpc|sepa-xml> [--out <file>]
 
+ctenifaktur version                # the installed build, also as --version
 ctenifaktur --json <command...>    # machine-readable output, see below
 ```
 
@@ -122,6 +123,7 @@ The document is the response from the public `/api/v1`, passed through rather th
 | `export`, `export-statement` | `{"file":"import.xml"}` — the endpoint answers with the bytes of a file, not with JSON, so the only fact the run produced is where it wrote |
 | `login` | `{"apiUrl":"…","loggedIn":true,"accountingUnitCount":1}` |
 | `logout` | `{"apiUrl":"…","loggedIn":false}` |
+| `version` | `{"version":"…"}` — read from the installed `package.json`, so it is the build that is actually running |
 
 `upload` prints its document once, at the end, in the same schema `status` returns for that batch — so a run that finished and a run you had to pick up again with `status` are read by the same parser. Note that the batch-level `status` stays the server's own: it can still read `processing` while every entry in `uploads[]` is finished, because the server does not close a batch until its cleanup drops an upload that never arrived. Read `uploads[]` for what happened, `status` for whether the server is done.
 

@@ -1025,6 +1025,18 @@ async function cmdExport(
   console.log(target);
 }
 
+/**
+ * Verze balíčku se čte z `package.json` vedle `dist/`, ne z konstanty v kódu.
+ * Konstanta by se rozešla s tím, co do `package.json` zapíše `npm version`,
+ * a `ctenifaktur version` by pak hlásil něco jiného než `npm ls -g`, což je
+ * přesně ta odpověď, kvůli které se na verzi člověk ptá. V tarballu je
+ * `package.json` vždycky, i když ho `files` nevyjmenuje.
+ */
+async function packageVersion(): Promise<string> {
+  const raw = await readFile(new URL("../package.json", import.meta.url), "utf8");
+  return (JSON.parse(raw) as { version: string }).version;
+}
+
 function usage(): void {
   // Přes `note`, takže v `--json` jde na chybový výstup: `ctenifaktur --json`
   // bez příkazu je přesně to, co udělá obal, který si vlajku přidává naslepo,
@@ -1041,6 +1053,9 @@ Příkazy:
   logout
     Smaže uložený klíč pro aktuální adresu API. Samotný klíč tím nezaniká,
     zneplatnit se dá jen v aplikaci.
+
+  version
+    Vypíše verzi CLI. Jde i jako --version.
 
   units
     Vypíše účetní jednotky. Z prvního sloupce vezmete id pro --unit.
@@ -1099,6 +1114,7 @@ Přepínač pro celé CLI:
       export-statement     ne JSON, takže dokument nese jen to, kam se zapsalo
       login                { "apiUrl", "loggedIn": true, "accountingUnitCount" }
       logout               { "apiUrl", "loggedIn": false }
+      version              { "version": "..." }
     Nahrání, jehož odeslání do úložiště selhalo, je v dávce označeno jako
     failed s errorCode upload_not_received a započítáno v counts, tedy tak, jak
     ho po vypršení lhůty označí i server.
@@ -1230,6 +1246,15 @@ async function main(): Promise<void> {
 
   if (!command || command === "help" || command === "--help") {
     usage();
+    return;
+  }
+  // Před `assertSecureApiUrl`: na verzi se člověk ptá i tehdy, když má rozbité
+  // `CF_API_URL`, a bez klíče taky. Přepínač i příkaz, ať to sedne na obojí
+  // zvyklost; `--help` to má stejně.
+  if (command === "version" || command === "--version") {
+    const version = await packageVersion();
+    if (jsonMode) return printJson({ version });
+    console.log(version);
     return;
   }
   // Před `login` taky: klíč se nemá poslat na `http://` vzdálený server ani
