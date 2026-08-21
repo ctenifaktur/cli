@@ -24,11 +24,26 @@ ctenifaktur upload-statement <file...> [--unit <id>]         # same, for bank st
 ctenifaktur status <batch-id>                                # check a batch, running or finished
 ctenifaktur export <ids...> --format pohoda [--out file]     # write the export file
 ctenifaktur export-statement <ids...> --format gpc [--out file]
+
+ctenifaktur --json <command...>                              # parse this, not the prose
 ```
 
 **`ctenifaktur --help` documents every flag, the limits and the exit codes.**
 Read it before guessing. Output is Czech; the error `code` before the colon is
 English and stable, the prose after it is not.
+
+**Use `--json` whenever you are going to read the output yourself.** It is a
+global switch, it works on every command, and with it standard output is exactly
+one JSON document and nothing else — progress and warnings go to stderr. Read
+the prose mode only when you are showing the output to the user.
+
+For `units`, `credits`, `status`, `upload` and `upload-statement` the document
+is the `/api/v1` response passed through, so it is the shape the OpenAPI
+document specifies — with one exception on the two upload commands, which mark
+the files that never reached storage themselves; see below. `export`,
+`export-statement`, `login` and `logout` have no API response to pass through,
+so those documents are the CLI's own and are described below. `--help` is the
+one command with no document at all: it stays prose and goes to stderr.
 
 ## Rules
 
@@ -44,15 +59,16 @@ per three pages started and the page count is known only during processing.
 tool timeout or a dropped connection kills it more often than any other
 command. The batch keeps running on the server regardless. Recover
 with `ctenifaktur status <batch-id>`, using the batch id from the `Dávka …`
-line. Re-running `upload` extracts and bills everything a second time, unless
-you reuse the exact same `--idempotency-key`. A rate limit mid-batch is not one
-of these cases: the CLI waits out `Retry-After` and retries, and if the limit
-still holds it ends by printing the `status` command to recover with.
+line — which is on stdout normally and on stderr under `--json`. Re-running
+`upload` extracts and bills everything a second time, unless you reuse the
+exact same `--idempotency-key`. A rate limit mid-batch is not one of these
+cases: the CLI waits out `Retry-After` and retries, and if the limit still
+holds it ends by printing the `status` command to recover with.
 
 **Exit `1` does not mean nothing worked.** A batch that ends
 `completed_with_failures` also exits `1`, on purpose, so scripts cannot mistake
-a partial run for a clean one. Read the per-file lines: the documents that were
-printed are real and exportable.
+a partial run for a clean one. Read the per-file lines — or `uploads[]` under
+`--json`: the documents that came back are real and exportable.
 
 **A bank statement is never an invoice.** The two have separate commands, and
 the command IS the declaration — nothing sniffs the file. `upload` on a bank
@@ -110,6 +126,68 @@ processed, usually because credits ran out, and re-uploading gets them. `bez
 vytěžených dat` (unparsed) are ones nothing could be read from, where
 re-uploading the same file burns credits for the same result. Either way say so,
 because the batch otherwise reads as finished.
+
+### The same batch under `--json`
+
+```jsonc
+{
+  "id": "7da58615-…", "kind": "documents", "status": "completed_with_failures",
+  "counts": { "total": 3, "pending": 0, "processing": 0, "completed": 2, "failed": 1 },
+  "uploads": [
+    { "uploadId": "0b9c…", "fileName": "faktura-01.pdf", "status": "completed",
+      "documentIds": ["e48428a7-…"] },
+    { "uploadId": "4d17…", "fileName": "sken.jpg", "status": "completed",
+      "documentIds": ["af668802-…"],
+      "incomplete": { "discarded": 2, "unparsed": 1 } },   // same warning as the `neúplné` line
+    { "uploadId": "7a62…", "fileName": "uctenka.pdf", "status": "failed",
+      "documentIds": [],
+      "errorCode": "source_rejected" }                     // same code as the brackets
+  ]
+}
+```
+
+Everything above applies unchanged; it is the same information as a structure.
+Ids for an export are `[.uploads[].documentIds[]]`, what failed and why is
+`.uploads[] | select(.errorCode)`, and `kind` says whether those ids belong to
+`export` or to `export-statement` — in prose mode that fact is a parenthesis on
+one line, here it is a field.
+
+`upload --json` prints this same document once, when the batch finishes, so a
+run you had to recover with `status` parses identically to one that completed.
+The `Dávka <id>` line you recover with is on stderr in this mode — capture it
+too, or you lose the batch id if the run is killed.
+
+An error is a document as well, and it is the API's own envelope:
+
+```json
+{ "error": { "code": "mixed_accounting_units", "message": "…",
+             "details": { "documents": [{ "id": "…", "accountingUnitId": "…", "ico": "…" }] } } }
+```
+
+Branch on `error.code`, never on `message`. `details` is what the refusal tells
+you to split the batch by, so a mixed-unit export is now a `group_by` rather
+than a parse of Czech.
+
+`error.code` comes from one of three namespaces. The API's own codes are in the
+OpenAPI document. `http_<status>` means the response carried no error envelope
+at all, almost always a gateway `502`/`503` in front of the app — treat it as a
+transient outage, not as a rejected request. Codes prefixed `cli_` come from the
+CLI itself: `cli_usage` (you called it wrong), `cli_not_logged_in`,
+`cli_file_not_found`, `cli_upload_failed` (nothing reached storage, nothing was
+charged), `cli_timeout` and `cli_network`, `cli_unexpected`.
+
+`cli_timeout` and `cli_network` on an `upload` mean the batch may well still be
+running: recover it with `status`, using the batch id from the `Dávka` line on
+stderr — capture stderr, because the document carries the id only inside the
+Czech `message`. On any other command they just mean the request did not get
+through, and there is no batch id to recover with; retry the command.
+
+There is no JSON export format for the contents of a document, and asking for
+one is a dead end: extracted document data leaves the service only as ISDOC,
+Pohoda or Money S3. `export --json` itself works, it just answers with where the
+file landed. If the user wants an analysis over the invoice contents, export the
+documents and read that file. `--json` tells you what happened to a batch, not
+what is on an invoice.
 
 ## Beyond the CLI
 

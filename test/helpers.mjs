@@ -38,6 +38,8 @@ export const CLI = join(here, "..", "dist", "ctenifaktur.js");
  *   response. `Infinity` never lets up. One second keeps the waiting real but
  *   short enough for the suite.
  * @param options.credits Body for `GET /credits`.
+ * @param options.accountingUnits Units for `GET /accounting-units`, which
+ *   `units` reads and `login` calls to verify a key.
  * @param options.apiError `{ path, status, body }` — one endpoint answers this
  *   error instead of its normal response, so a test can drive the CLI's error
  *   rendering with a real body.
@@ -50,6 +52,7 @@ export async function startStub({
   throttle = {},
   apiError,
   credits,
+  accountingUnits = [],
 } = {}) {
   const received = {
     batchPolls: 0,
@@ -96,6 +99,11 @@ export async function startStub({
     if (req.method === "GET" && url.pathname === "/api/v1/credits") {
       req.resume();
       return json(200, credits);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/v1/accounting-units") {
+      req.resume();
+      return json(200, { accountingUnits });
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/api/v1/batches/")) {
@@ -176,8 +184,12 @@ export async function startStub({
  * A run that overruns `killAfterMs` is killed and reported as `timedOut`. The
  * failure mode being tested is a CLI that waits half an hour for a batch, so
  * without this the suite would hang instead of going red.
+ *
+ * `stdin` feeds the run through a pipe and closes it, which is how `login`
+ * takes a key outside a terminal. Without closing it, `login` would wait for
+ * end of input until the killer fires.
  */
-export async function runCli(args, { base, env = {}, cwd, killAfterMs = 12_000 } = {}) {
+export async function runCli(args, { base, env = {}, cwd, stdin, killAfterMs = 12_000 } = {}) {
   const home = await mkdtemp(join(tmpdir(), "ctenifaktur-test-"));
 
   return new Promise((resolve, reject) => {
@@ -192,6 +204,8 @@ export async function runCli(args, { base, env = {}, cwd, killAfterMs = 12_000 }
         ...env,
       },
     });
+
+    if (stdin !== undefined) child.stdin.end(stdin);
 
     let stdout = "";
     let stderr = "";
