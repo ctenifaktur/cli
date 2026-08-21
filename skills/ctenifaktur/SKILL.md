@@ -25,6 +25,7 @@ ctenifaktur status <batch-id>                                # check a batch, ru
 ctenifaktur export <ids...> --format pohoda [--out file]     # write the export file
 ctenifaktur export-statement <ids...> --format gpc [--out file]
 
+ctenifaktur version                                          # installed build, for feature checks
 ctenifaktur --json <command...>                              # parse this, not the prose
 ```
 
@@ -41,8 +42,9 @@ For `units`, `credits`, `status`, `upload` and `upload-statement` the document
 is the `/api/v1` response passed through, so it is the shape the OpenAPI
 document specifies — with one exception on the two upload commands, which mark
 the files that never reached storage themselves; see below. `export`,
-`export-statement`, `login` and `logout` have no API response to pass through,
-so those documents are the CLI's own and are described below. `--help` is the
+`export-statement`, `login`, `logout` and `version` have no API response to
+pass through, so those documents are the CLI's own; all but `version`, which is
+just `{"version":"…"}`, are described below. `--help` is the
 one command with no document at all: it stays prose and goes to stderr.
 
 ## Rules
