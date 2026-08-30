@@ -49,6 +49,7 @@ ctenifaktur login
 ctenifaktur logout
 ctenifaktur units
 ctenifaktur credits
+ctenifaktur documents [--unit <id>] [--page <number>] [--limit <count>]
 ctenifaktur upload <file...> [--unit <id>] [--idempotency-key <key>]
 ctenifaktur upload-statement <file...> [--unit <id>] [--idempotency-key <key>]
 ctenifaktur status <batch-id>
@@ -58,6 +59,8 @@ ctenifaktur export-statement <statement-id...> --format <gpc|sepa-xml> [--out <f
 ctenifaktur version                # the installed build, also as --version
 ctenifaktur --json <command...>    # machine-readable output, see below
 ```
+
+`documents` lists stored documents from newest to oldest without requiring a batch id, including documents uploaded earlier in the web app. It returns metadata only: id, file name, processing and archive state, accounting unit, and upload time. Use `--unit` to narrow the list and `--page` / `--limit` to move through older documents.
 
 From a folder of PDFs to a file you can import:
 
@@ -118,6 +121,7 @@ The document is the response from the public `/api/v1`, passed through rather th
 |---|---|
 | `units` | `{"accountingUnits":[…]}`, verbatim from `GET /accounting-units` |
 | `credits` | the balance object, verbatim |
+| `documents` | `{"documents":[…],"total":…,"page":…,"limit":…}`, verbatim from `GET /documents` |
 | `status` | the batch, verbatim from `GET /batches/{id}` — `status`, `counts`, and `uploads[]` with `documentIds`, `incomplete` and `errorCode` |
 | `upload`, `upload-statement` | that same batch in that same shape, with the one overlay described below |
 | `export`, `export-statement` | `{"file":"import.xml"}` — the endpoint answers with the bytes of a file, not with JSON, so the only fact the run produced is where it wrote |
@@ -145,7 +149,7 @@ That is the point of the flag for `export`: the refusal tells you how to split t
 
 Exit codes do not change, and neither does anything without the flag. `ctenifaktur --help` stays prose, because that one really is for a human — under `--json` it goes to standard error, so a wrapper that adds the flag to whatever it was given never finds Czech text where a document should be.
 
-There is no `--format json` for exports and there will not be one: extracted document data leaves the service as a real accounting format (ISDOC, Pohoda, Money S3), and converting that to JSON in the client would be a second implementation of the extraction. An analysis over the documents themselves is an analysis over the exported file; `--json` is for driving the pipeline that produces it.
+`documents --json` returns metadata for finding a document, not its extracted supplier, amounts or line items. There is no `--format json` for exports and there will not be one: extracted document data leaves the service as a real accounting format (ISDOC, Pohoda, Money S3), and converting that to JSON in the client would be a second implementation of the extraction. An analysis over the documents themselves is an analysis over the exported file; `--json` is for driving the pipeline that produces it.
 
 ## AI agent skill
 

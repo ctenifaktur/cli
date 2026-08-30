@@ -29,6 +29,7 @@ export const CLI = join(here, "..", "dist", "ctenifaktur.js");
  * @param options.documents Response for `POST /documents` and
  *   `POST /bank-statements`. `uploadUrl` is filled in by the stub, so callers
  *   only give `uploadId` and `fileName`.
+ * @param options.documentList Response for `GET /documents`.
  * @param options.putStatus HTTP status per `uploadId` for the storage PUT,
  *   default 200. Use a 4xx to make an upload fail without any retry wait.
  * @param options.exportFile Bytes returned by either export endpoint, with the
@@ -47,6 +48,7 @@ export const CLI = join(here, "..", "dist", "ctenifaktur.js");
 export async function startStub({
   batches = [],
   documents,
+  documentList,
   putStatus = {},
   exportFile,
   throttle = {},
@@ -63,6 +65,8 @@ export async function startStub({
     preparedPaths: [],
     /** `{ path, body }` per export call, so a test can assert the field name. */
     exports: [],
+    /** Query strings received by `GET /documents`. */
+    documentListQueries: [],
     /** How many calls were answered with a 429. */
     throttled: 0,
   };
@@ -104,6 +108,12 @@ export async function startStub({
     if (req.method === "GET" && url.pathname === "/api/v1/accounting-units") {
       req.resume();
       return json(200, { accountingUnits });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/v1/documents") {
+      req.resume();
+      received.documentListQueries.push(url.searchParams.toString());
+      return json(200, documentList);
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/api/v1/batches/")) {
