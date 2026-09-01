@@ -21,7 +21,7 @@ const DOCUMENTS = {
       id: "doc-failed",
       fileName: "necitelny-sken.jpg",
       status: "failed",
-      archived: false,
+      archived: true,
       accountingUnitId: null,
       createdAt: "2026-08-19T12:00:00.000Z",
     },
@@ -50,8 +50,8 @@ describe("documents", () => {
     await stub.close();
 
     assert.equal(result.code, 0);
-    assert.match(result.stdout, /doc-archived.*archiv.*starsi-faktura\.pdf/);
-    assert.match(result.stdout, /doc-failed.*selhalo.*necitelny-sken\.jpg.*nezařazeno/);
+    assert.match(result.stdout, /doc-archived.*hotovo.*archiv.*starsi-faktura\.pdf/);
+    assert.match(result.stdout, /doc-failed.*selhalo.*archiv.*necitelny-sken\.jpg.*nezařazeno/);
     assert.match(result.stdout, /Strana 2 z 28, celkem 55\./);
     assert.deepEqual(stub.received.documentListQueries, [
       "accountingUnitId=6a5b41d8e7c204f93a1b8e62&page=2&limit=2",

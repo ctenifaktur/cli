@@ -612,12 +612,14 @@ async function cmdDocuments(
 
   for (const document of response.documents) {
     const date = new Date(document.createdAt).toLocaleDateString("cs-CZ");
-    const state =
-      document.status === "failed" ? "selhalo" : document.archived ? "archiv" : "hotovo";
+    const state = document.status === "failed" ? "selhalo" : "hotovo";
     const unitLabel = document.accountingUnitId
       ? `jednotka ${document.accountingUnitId}`
       : "nezařazeno";
-    console.log(`${document.id}  ${date}  ${state}  ${document.fileName}  ${unitLabel}`);
+    const columns = [document.id, date, state];
+    if (document.archived) columns.push("archiv");
+    columns.push(document.fileName, unitLabel);
+    console.log(columns.join("  "));
   }
 
   if (response.total > 0) {
