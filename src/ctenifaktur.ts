@@ -1123,8 +1123,8 @@ Příkazy:
 
   documents [--unit <id>] [--page <číslo>] [--limit <počet>]
     Vypíše uložené doklady od nejnovějších, i bez id dávky. Výpis obsahuje
-    id, datum, název souboru, stav a účetní jednotku. Na jednu stránku jde
-    nejvýše 100 dokladů.
+    id, datum, název souboru, stav, archivaci a účetní jednotku. Na jednu
+    stránku jde nejvýše 100 dokladů.
 
   upload <soubor...> [--unit <id>] [--idempotency-key <klíč>]
     Nahraje soubory a počká na vytěžení. U každého vypíše id vzniklých
