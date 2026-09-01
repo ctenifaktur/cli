@@ -572,6 +572,62 @@ async function cmdUnits(): Promise<void> {
   }
 }
 
+interface DocumentListItem {
+  id: string;
+  fileName: string;
+  status: "completed" | "failed";
+  archived: boolean;
+  accountingUnitId: string | null;
+  createdAt: string;
+}
+
+interface DocumentListResponse {
+  documents: DocumentListItem[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+async function cmdDocuments(
+  unit?: string,
+  page?: string,
+  limit?: string,
+): Promise<void> {
+  const query = new URLSearchParams();
+  if (unit) query.set("accountingUnitId", unit);
+  if (page) query.set("page", page);
+  if (limit) query.set("limit", limit);
+
+  const suffix = query.size > 0 ? `?${query}` : "";
+  const response = await api<DocumentListResponse>(`/documents${suffix}`);
+  if (jsonMode) return printJson(response);
+
+  if (response.documents.length === 0) {
+    console.log(
+      response.total === 0
+        ? "Žádné doklady."
+        : `Na stránce ${response.page} nejsou žádné doklady.`,
+    );
+  }
+
+  for (const document of response.documents) {
+    const date = new Date(document.createdAt).toLocaleDateString("cs-CZ");
+    const state = document.status === "failed" ? "selhalo" : "hotovo";
+    const unitLabel = document.accountingUnitId
+      ? `jednotka ${document.accountingUnitId}`
+      : "nezařazeno";
+    const columns = [document.id, date, state];
+    if (document.archived) columns.push("archiv");
+    columns.push(document.fileName, unitLabel);
+    console.log(columns.join("  "));
+  }
+
+  if (response.total > 0) {
+    const pages = Math.ceil(response.total / response.limit);
+    console.log(`Strana ${response.page} z ${pages}, celkem ${response.total}.`);
+  }
+}
+
 interface CreateUploadResponse {
   batchId: string;
   uploads: Array<{ uploadId: string; fileName: string; uploadUrl: string; expiresAt: string }>;
@@ -1065,6 +1121,11 @@ Příkazy:
     kredity. Kvóta se obnovuje k uvedenému datu, kredity ne. U výpisů je to
     odhad, jejich cena se počítá za každé započaté tři strany.
 
+  documents [--unit <id>] [--page <číslo>] [--limit <počet>]
+    Vypíše uložené doklady od nejnovějších, i bez id dávky. Výpis obsahuje
+    id, datum, název souboru, stav, archivaci a účetní jednotku. Na jednu
+    stránku jde nejvýše 100 dokladů.
+
   upload <soubor...> [--unit <id>] [--idempotency-key <klíč>]
     Nahraje soubory a počká na vytěžení. U každého vypíše id vzniklých
     dokladů; z jednoho souboru jich může vzniknout víc. Bez --unit zůstanou
@@ -1108,6 +1169,7 @@ Přepínač pro celé CLI:
     beze změny — i s poli, která samo CLI nečte:
       units                vrací { "accountingUnits": [...] }
       credits              zůstatek tak, jak přišel
+      documents            stránku { "documents", "total", "page", "limit" }
       status, upload,      celou dávku: status, counts a uploads[] s poli
       upload-statement     documentIds, incomplete a errorCode
       export,              { "file": "..." }; ty endpointy vracejí soubor,
@@ -1133,6 +1195,7 @@ Přepínač pro celé CLI:
     tahle nápověda: s --json jde na chybový výstup.
 
 Příklad:
+  ctenifaktur documents --unit 6a5b41d8e7c204f93a1b8e62
   ctenifaktur upload doklady/*.pdf --unit 6a5b41d8e7c204f93a1b8e62
   ctenifaktur export e48428a7-52af-4dc2-981f-dfba661a71ae \\
       af668802-4304-4623-9ec4-fd89293e69e0 --format pohoda --out import.xml
@@ -1157,8 +1220,8 @@ Návratové kódy:
       úspěšné doklady z výpisu výš platí a jdou exportovat
 
 Limity:
-  25 MB na soubor, 300 souborů na dávku, 500 dokladů na jeden export dokladů,
-  100 výpisů na jeden export výpisů.
+  25 MB na soubor, 300 souborů na dávku, 100 dokladů na stránku seznamu,
+  500 dokladů na jeden export dokladů a 100 výpisů na jeden export výpisů.
 
 Limit požadavků:
   Počítá se na klíč a minutu. Když se vyčerpá, CLI počká podle hlavičky
@@ -1181,7 +1244,7 @@ Dokumentace:
  * i `takeFlag`, takže nový přepínač s hodnotou neprojde kompilací, dokud se
  * sem nedopíše — a seznam nemůže tiše zestárnout.
  */
-const VALUE_FLAGS = ["unit", "idempotency-key", "format", "out"] as const;
+const VALUE_FLAGS = ["unit", "page", "limit", "idempotency-key", "format", "out"] as const;
 const VALUE_FLAG_ARGS = new Set<string>(VALUE_FLAGS.map((name) => `--${name}`));
 
 /** Odloupne `--jméno hodnota` z argumentů a vrátí zbytek jako poziční. */
@@ -1276,6 +1339,14 @@ async function main(): Promise<void> {
       return cmdUnits();
     case "credits":
       return cmdCredits();
+    case "documents": {
+      const unit = takeFlag(rest, "unit");
+      const page = takeFlag(rest, "page");
+      const limit = takeFlag(rest, "limit");
+      rejectUnknownFlags(rest);
+      if (rest.length > 0) fail("příkaz documents nepřijímá poziční argumenty", "cli_usage");
+      return cmdDocuments(unit, page, limit);
+    }
     case "upload":
     case "upload-statement": {
       // `takeFlag` mutuje `rest`, takže po něm v něm zbývají jen poziční

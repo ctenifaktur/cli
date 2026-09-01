@@ -19,6 +19,7 @@ ctenifaktur login                                            # store an API key
 ctenifaktur logout                                           # forget it again
 ctenifaktur units                                            # accounting units
 ctenifaktur credits                                          # what the office can still process
+ctenifaktur documents [--unit <id>] [--page <n>] [--limit <n>] # stored documents, no batch id needed
 ctenifaktur upload <file...> [--unit <id>]                   # upload, wait, print document ids
 ctenifaktur upload-statement <file...> [--unit <id>]         # same, for bank statements
 ctenifaktur status <batch-id>                                # check a batch, running or finished
@@ -38,10 +39,10 @@ global switch, it works on every command, and with it standard output is exactly
 one JSON document and nothing else — progress and warnings go to stderr. Read
 the prose mode only when you are showing the output to the user.
 
-For `units`, `credits`, `status`, `upload` and `upload-statement` the document
-is the `/api/v1` response passed through, so it is the shape the OpenAPI
-document specifies — with one exception on the two upload commands, which mark
-the files that never reached storage themselves; see below. `export`,
+For `units`, `credits`, `documents`, `status`, `upload` and `upload-statement`,
+the document is the `/api/v1` response passed through, so it is the shape the
+OpenAPI document specifies — with one exception on the two upload commands,
+which mark the files that never reached storage themselves; see below. `export`,
 `export-statement`, `login`, `logout` and `version` have no API response to
 pass through, so those documents are the CLI's own; all but `version`, which is
 just `{"version":"…"}`, are described below. `--help` is the
@@ -106,6 +107,13 @@ have them run `ctenifaktur login`. The secret is shown once, at creation, and
 the API needs a paid plan (`plan_required` means the free plan). Never put a key
 in a command line, a file you write, or a commit: `login` exists so it stays out
 of shell history and process listings.
+
+**Find an existing document without a batch id.** Use
+`ctenifaktur --json documents`. It returns stored-document metadata from newest
+to oldest, including ids that no retained upload batch can rediscover. Narrow
+with `--unit`; move through older
+pages with `--page` and `--limit`. The response is metadata only, so use the id
+with `export` rather than looking for supplier or amount fields in it.
 
 ## Reading the output
 
@@ -184,12 +192,12 @@ stderr — capture stderr, because the document carries the id only inside the
 Czech `message`. On any other command they just mean the request did not get
 through, and there is no batch id to recover with; retry the command.
 
-There is no JSON export format for the contents of a document, and asking for
-one is a dead end: extracted document data leaves the service only as ISDOC,
-Pohoda or Money S3. `export --json` itself works, it just answers with where the
-file landed. If the user wants an analysis over the invoice contents, export the
-documents and read that file. `--json` tells you what happened to a batch, not
-what is on an invoice.
+`documents --json` returns metadata for finding a document, not its extracted
+supplier, amounts or line items. There is no JSON export format for the contents
+of a document, and asking for one is a dead end: extracted document data leaves
+the service only as ISDOC, Pohoda or Money S3. `export --json` itself works, it
+just answers with where the file landed. If the user wants an analysis over the
+invoice contents, export the documents and read that file.
 
 ## Beyond the CLI
 
