@@ -7,15 +7,18 @@ description: Turn Czech invoices, receipts and bank statements into accounting-r
 
 ```bash
 npm install -g ctenifaktur      # or: npx ctenifaktur <command>
-ctenifaktur login               # prompts for the key, verifies it, stores it 0600
+ctenifaktur login               # opens a browser, mints the key, stores it 0600
 ```
 
-Never run `login` yourself with a key you invented or found in a file. If the
-user is not logged in, ask them to run it. In CI, `CF_API_KEY` wins over the
-stored key, so a pipeline needs no login at all.
+`login` is the user's to run, not yours: it opens a browser, shows a
+verification code they have to compare, and waits for them to pick an office and
+approve. It blocks until they do, so do not run it in the background and do not
+run it with a key you invented or found in a file. If the user is not logged in,
+ask them to run it and stop. In CI, `CF_API_KEY` wins over the stored key, so a
+pipeline needs no login at all.
 
 ```bash
-ctenifaktur login                                            # store an API key
+ctenifaktur login [--key] [--no-browser]                     # get a key via the browser
 ctenifaktur logout                                           # forget it again
 ctenifaktur units                                            # accounting units
 ctenifaktur credits                                          # what the office can still process
@@ -23,7 +26,7 @@ ctenifaktur documents [--unit <id>] [--page <n>] [--limit <n>] # stored document
 ctenifaktur upload <file...> [--unit <id>]                   # upload, wait, print document ids
 ctenifaktur upload-statement <file...> [--unit <id>]         # same, for bank statements
 ctenifaktur status <batch-id>                                # check a batch, running or finished
-ctenifaktur export <ids...> --format pohoda [--out file]     # write the export file
+ctenifaktur export <ids...> --format <isdoc|pohoda|money-s3|abra-flexi> [--out file]
 ctenifaktur export-statement <ids...> --format gpc [--out file]
 
 ctenifaktur version                                          # installed build, for feature checks
@@ -96,17 +99,20 @@ rejected with `mixed_accounting_units`, and the refusal lists every document
 with its `accountingUnitId` and `ico` on its own line underneath — split by
 those lines and run `export` once per unit. `--format isdoc` returns a `.isdoc` file for a single document
 but a ZIP for several, so do not hand `--out` an `.isdoc` name for a
-multi-document export.
+multi-document export; `pohoda`, `money-s3` and `abra-flexi` always return one XML file.
 
 **Idempotency.** Each run generates a fresh key, which covers a retried network
 call but not you running the command twice. If the upload is scheduled or you
 may retry it, pass `--idempotency-key` yourself and reuse the same value.
 
-**No key.** Send the user to **Tým a nastavení → API klíče** in the app, then
-have them run `ctenifaktur login`. The secret is shown once, at creation, and
-the API needs a paid plan (`plan_required` means the free plan). Never put a key
-in a command line, a file you write, or a commit: `login` exists so it stays out
-of shell history and process listings.
+**No key.** Have the user run `ctenifaktur login` and wait. It opens a browser
+and issues the key there, so they do not need to visit settings first. Issuing
+one needs the **Správce** role and a paid plan (`plan_required` means the free
+plan); a colleague without that role has to ask an admin. The key then lives
+under **Tým a nastavení → API klíče**, named after their machine, which is where
+they revoke it. Never put a key in a command line, a file you write, or a
+commit: the whole point of `login` is that the secret never passes through
+either.
 
 **Find an existing document without a batch id.** Use
 `ctenifaktur --json documents`. It returns stored-document metadata from newest

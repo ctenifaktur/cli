@@ -9,12 +9,16 @@
  * Klíč se bere z `ctenifaktur login`, nebo z `CF_API_KEY`, když má přednost mít
  * prostředí (CI, kontejner). Adresu API mění `CF_API_URL`, výchozí je
  * https://ctenifaktur.cz.
+ *
+ * `login` v terminálu otevře prohlížeč a klíč si vyzvedne sám; klíč vydaný
+ * ručně v aplikaci se pořád vkládá přes `login --key` nebo rourou.
  */
 
+import { spawn } from "node:child_process";
 import { writeSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 
 const API_URL = (process.env.CF_API_URL ?? "https://ctenifaktur.cz").replace(/\/+$/, "");
 
@@ -446,11 +450,221 @@ async function readSecretFromPipe(): Promise<string> {
 }
 
 /**
- * Klíč se schválně nedá předat přepínačem. Skončil by v historii shellu a v
- * seznamu procesů, což je přesně to, čemu se `login` vyhýbá; pro automatizaci
- * je tu `CF_API_KEY` a roura.
+ * Přihlášení přes prohlížeč, jak ho zná `gh auth login` a spol.
+ *
+ * Nahrazuje ruční kolečko „vydej klíč v aplikaci, zkopíruj, vlož sem". CLI si
+ * řekne o kód, ukáže ho a otevře prohlížeč; člověk tam kód porovná, vybere
+ * kancelář a oprávnění, a klíč vznikne až v tu chvíli. Do terminálu se tedy
+ * nikdy nevkládá nic z toho, co by se dalo přečíst přes rameno nebo vylovit
+ * z historie shellu.
+ *
+ * Ruční cesta zůstává: `login --key`, roura a `CF_API_KEY`. Prohlížeč není
+ * všude, a klíč pro CI vydává člověk v aplikaci tak jako dřív.
  */
-async function cmdLogin(): Promise<void> {
+
+/** Co terminál o sobě řekne. Jde do jména klíče a na schvalovací obrazovku. */
+async function clientLabel(): Promise<string> {
+  const machine = hostname().replace(/\.local$/, "");
+  const version = await packageVersion().catch(() => "");
+  return `CLI${version ? ` ${version}` : ""} na ${machine || "neznámém stroji"}`;
+}
+
+interface DeviceStart {
+  userCode: string;
+  deviceCode: string;
+  verificationUri: string;
+  verificationUriComplete: string;
+  expiresIn: number;
+  interval: number;
+}
+
+interface DevicePoll {
+  status: "pending" | "slow_down" | "approved" | "denied" | "expired";
+  apiKey?: string;
+  keyName?: string;
+  workspace?: { id: string; name: string };
+  scopes?: string[];
+}
+
+/**
+ * Volání bez klíče, protože klíč je zrovna to, o co jde.
+ *
+ * Vlastní cesta místo `api()`: ta posílá `Authorization` vždycky, a `Bearer
+ * undefined` by tyhle dva endpointy odmítly dřív, než by se k čemukoli dostaly.
+ * Opakování po `429` tu taky nedává smysl, limit na zahájení je na adresu a
+ * čekat na něj minutu je horší odpověď než to říct rovnou.
+ */
+async function apiAnonymous<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetchWithTimeout(
+    `${API_URL}/api/v1${path}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    API_TIMEOUT_MS,
+  );
+  if (!response.ok) failFromApi(await describeFailure(response));
+  return response.json() as Promise<T>;
+}
+
+/**
+ * Rámeček kolem kódu.
+ *
+ * Kód se porovnává očima proti tomu, co ukazuje prohlížeč, takže má být to
+ * jediné, co v terminálu vyčnívá. Počítá se v kódových bodech, ne v bajtech:
+ * `Ověřovací` má diakritiku a `length` na bufferu by rámeček rozhodil.
+ */
+function boxed(lines: string[]): string {
+  const width = Math.max(...lines.map((line) => [...line].length));
+  const rule = "\u2500".repeat(width + 2);
+  const body = lines.map((line) => {
+    const pad = width - [...line].length;
+    const left = Math.floor(pad / 2);
+    return `\u2502 ${" ".repeat(left)}${line}${" ".repeat(pad - left)} \u2502`;
+  });
+  return [`\u250c${rule}\u2510`, ...body, `\u2514${rule}\u2518`]
+    .map((line) => `  ${line}`)
+    .join("\n");
+}
+
+const SPINNER_FRAMES = ["\u280b", "\u2819", "\u2839", "\u2838", "\u283c", "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"];
+
+/**
+ * Otáčející se znak po dobu čekání, a jen tam, kde má smysl.
+ *
+ * Mimo terminál se z něj stane jeden řádek: v přesměrovaném výstupu, v logu CI
+ * a v `--json` by se z překreslování stalo smetí, které nikdo nečte. Kurzor se
+ * skrývá a vrací, včetně cesty přes Ctrl-C, protože terminál, kterému po
+ * přerušení zmizí kurzor, vypadá rozbitě ještě dlouho po nás.
+ */
+function startSpinner(label: string): () => void {
+  if (jsonMode || !process.stderr.isTTY) {
+    note(label);
+    return () => {};
+  }
+
+  let frame = 0;
+  const restore = () => process.stderr.write("\r\u001b[2K\u001b[?25h");
+  process.stderr.write("\u001b[?25l");
+  const timer = setInterval(() => {
+    process.stderr.write(`\r  ${SPINNER_FRAMES[frame++ % SPINNER_FRAMES.length]} ${label}`);
+  }, 90);
+  // Bez `unref` by tenhle časovač držel proces naživu i po dokončení běhu.
+  timer.unref();
+  process.once("exit", restore);
+
+  return () => {
+    clearInterval(timer);
+    process.off("exit", restore);
+    restore();
+  };
+}
+
+/**
+ * Otevře prohlížeč, a když se to nepovede, nic tím nezkazí: adresa je vypsaná
+ * o řádek výš a je to jediné, na čem přihlášení opravdu stojí. Chyba se proto
+ * polyká, ne hlásí; `spawn` selže na hlavě bez GUI, v kontejneru i přes SSH,
+ * a v žádném z těch případů to není chyba běhu.
+ */
+function openBrowser(url: string): void {
+  const [command, args] =
+    process.platform === "darwin"
+      ? ["open", [url]]
+      : process.platform === "win32"
+        ? // Prázdný řetězec je titulek okna. Bez něj by `start` vzal za titulek
+          // adresu a neotevřel nic.
+          ["cmd", ["/c", "start", "", url]]
+        : ["xdg-open", [url]];
+  try {
+    const child = spawn(command as string, args as string[], {
+      stdio: "ignore",
+      detached: true,
+    });
+    child.on("error", () => {});
+    child.unref();
+  } catch {
+    // Viz výš.
+  }
+}
+
+/**
+ * Čeká na rozhodnutí v prohlížeči.
+ *
+ * Vlastní strop podle `expiresIn` ze serveru, ne nekonečná smyčka: kdo okno
+ * zavře, aniž by cokoli zvolil, nesmí nechat terminál viset navždy.
+ */
+async function pollForKey(start: DeviceStart): Promise<DevicePoll> {
+  const deadline = Date.now() + start.expiresIn * 1000;
+  let wait = Math.max(1, start.interval) * 1000;
+
+  // Ptát se hned a čekat až mezi dotazy, ne naopak. Kdo potvrdí rychle, čeká
+  // jinak celý interval v terminálu, ve kterém se už nic nestane, a to je
+  // přesně ta část toku, kterou má tenhle příkaz zrychlit.
+  for (let first = true; Date.now() < deadline; first = false) {
+    if (!first) await sleep(wait);
+    const poll = await apiAnonymous<DevicePoll>("/auth/device/token", {
+      deviceCode: start.deviceCode,
+    });
+
+    if (poll.status === "approved") return poll;
+    if (poll.status === "denied") {
+      fail("přihlášení jste v prohlížeči nepovolili", "cli_usage");
+    }
+    if (poll.status === "expired") {
+      fail("platnost kódu vypršela, spusťte ctenifaktur login znovu", "cli_usage");
+    }
+    // Server říká, že se ptáme rychleji, než dovolil. Přidat vteřinu a jet dál
+    // je jediná správná odpověď; hlásit to uživateli není co.
+    if (poll.status === "slow_down") wait += 1000;
+  }
+
+  fail("v daném čase nikdo přihlášení nepotvrdil", "cli_timeout");
+}
+
+/** Přihlášení přes prohlížeč. Vrací klíč, který si vyzvedlo. */
+async function loginViaBrowser(noBrowser: boolean): Promise<DevicePoll> {
+  const start = await apiAnonymous<DeviceStart>("/auth/device", {
+    clientLabel: await clientLabel(),
+  });
+
+  note("");
+  note(boxed(["Ověřovací kód", "", [...start.userCode].join(" ")]));
+  note("");
+
+  if (noBrowser) {
+    note(`Otevřete v prohlížeči: ${start.verificationUriComplete}`);
+  } else {
+    openBrowser(start.verificationUriComplete);
+    note("Otevíráme prohlížeč, potvrďte tam, že kód souhlasí.");
+    note(`Kdyby se neotevřel: ${start.verificationUriComplete}`);
+  }
+  note("");
+
+  const stop = startSpinner("Čekáme na potvrzení, přerušíte Ctrl-C");
+  try {
+    return await pollForKey(start);
+  } finally {
+    stop();
+  }
+}
+
+/**
+ * Ruční klíč se schválně nedá předat hodnotou přepínače. Skončil by v historii
+ * shellu a v seznamu procesů, což je přesně to, čemu se `login` vyhýbá; pro
+ * automatizaci je tu `CF_API_KEY` a roura. `--key` proto jen přepne na výzvu,
+ * hodnotu za sebou nemá.
+ */
+async function cmdLogin(pasteKey: boolean, noBrowser: boolean): Promise<void> {
+  // Kód má komu ukázat jen terminál, takže bez něj (roura, CI) platí původní
+  // cesta beze změny. `--no-browser` je výjimka schválně: znamená „udělej to
+  // přes prohlížeč, jen ho neotevírej", což je celý ten tok, ne jeho detail,
+  // a je to jediné, čím si ho vyžádá obal, který CLI spouští bez terminálu.
+  if (!pasteKey && (noBrowser || process.stdin.isTTY)) {
+    const approved = await loginViaBrowser(noBrowser);
+    return finishLogin(approved.apiKey ?? "", approved);
+  }
+
   const key = process.stdin.isTTY
     ? await readSecretFromTty(`Klíč pro ${API_URL} (nevypisuje se): `)
     : await readSecretFromPipe();
@@ -462,10 +676,56 @@ async function cmdLogin(): Promise<void> {
     fail("tohle nevypadá jako API klíč, ten začíná na cf_", "cli_usage");
   }
 
-  // Ověřit dřív, než se uloží: uložený nefunkční klíč je horší než žádný,
-  // protože se pak chyba objeví až u prvního nahrávání.
+  return finishLogin(key);
+}
+
+/**
+ * Konec obou cest: ověřit, uložit, ohlásit.
+ *
+ * Ověřuje se i klíč z prohlížeče, i když ho server právě vydal. Není to
+ * nedůvěra: uložený nefunkční klíč je horší než žádný, protože se chyba objeví
+ * až u prvního nahrávání.
+ *
+ * Ověřuje se přes `/credits`, ne přes `/accounting-units`. Na schvalovací
+ * obrazovce jde odškrtnout obě čtecí oprávnění a povolit klíč jen na nahrávání;
+ * takový klíč je platný, ale `/accounting-units` ho odmítne s
+ * `insufficient_scope` a `login` by skončil chybou, přestože v prohlížeči vše
+ * proběhlo. `/credits` je jediné, na co dosáhne každý rozsah. Počet jednotek se
+ * zjišťuje až potom a jeho selhání přihlášení neshodí: je to věta navíc, ne
+ * podmínka.
+ *
+ * @param approved Odpověď, když klíč přišel z prohlížeče. Nese jméno kanceláře,
+ *   které se z klíče samotného nedá zjistit.
+ */
+/**
+ * Kolik účetních jednotek klíč vidí, nebo `null`, když na ně nemá oprávnění.
+ *
+ * Vlastní `fetch` místo `api()`, protože `api()` na neúspěch zavolá
+ * `failFromApi` a ukončí proces, což je tady špatná odpověď: klíč je v pořádku,
+ * jen na tenhle jeden endpoint nedosáhne.
+ */
+async function countAccountingUnits(): Promise<number | null> {
+  const response = await fetchWithTimeout(
+    `${API_URL}/api/v1/accounting-units`,
+    { headers: { Authorization: `Bearer ${apiKey}` } },
+    API_TIMEOUT_MS,
+  );
+  if (!response.ok) return null;
+  const { accountingUnits } = (await response.json()) as { accountingUnits: AccountingUnit[] };
+  return accountingUnits.length;
+}
+
+async function finishLogin(key: string, approved?: DevicePoll): Promise<void> {
+  if (!key) fail("server nevrátil klíč", "cli_unexpected");
+
+  // Ověřit dřív, než se uloží.
   apiKey = key;
-  const { accountingUnits } = await api<{ accountingUnits: AccountingUnit[] }>("/accounting-units");
+  await api<unknown>("/credits");
+
+  // `null` znamená „klíč na to nemá oprávnění", ne nula. Nula je legitimní
+  // odpověď a člověk, který ji uvidí, má jít založit účetní jednotku; klíč jen
+  // na nahrávání takovou radu nepotřebuje.
+  const accountingUnitCount = await countAccountingUnits();
 
   const credentials = await readCredentials();
   credentials[API_URL] = key;
@@ -480,11 +740,27 @@ async function cmdLogin(): Promise<void> {
     return printJson({
       apiUrl: API_URL,
       loggedIn: true,
-      accountingUnitCount: accountingUnits.length,
+      ...(accountingUnitCount === null ? {} : { accountingUnitCount }),
+      // Jen u přihlášení přes prohlížeč: u vloženého klíče nemáme kancelář
+      // odkud vzít a `"workspace": null` by tvrdilo, že žádnou nemá.
+      ...(approved?.workspace ? { workspace: approved.workspace } : {}),
     });
   }
-  console.log(`Přihlášeno k ${API_URL}, klíč uložen do ${configPath()}.`);
-  console.log(`Účetní jednotky vypíše ctenifaktur units, klíč jich teď vidí ${accountingUnits.length}.`);
+
+  if (approved?.workspace?.name) {
+    console.log(`Přihlášeno ke kanceláři ${approved.workspace.name}.`);
+  } else {
+    console.log(`Přihlášeno k ${API_URL}.`);
+  }
+  console.log(`Klíč uložen do ${configPath()}.`);
+  if (approved?.keyName) {
+    console.log(`V aplikaci ho najdete jako „${approved.keyName}" v sekci Tým a nastavení, část API klíče, a tamtéž ho zneplatníte.`);
+  }
+  if (accountingUnitCount === null) {
+    console.log("Klíč má jen oprávnění k nahrávání, takže účetní jednotky nevypíše.");
+  } else {
+    console.log(`Účetní jednotky vypíše ctenifaktur units, klíč jich teď vidí ${accountingUnitCount}.`);
+  }
 }
 
 async function cmdLogout(): Promise<void> {
@@ -1101,9 +1377,14 @@ function usage(): void {
 Nahrání dokladů a stažení exportů z příkazové řádky.
 
 Příkazy:
-  login
-    Zeptá se na API klíč, ověří ho a uloží. Při psaní se klíč nevypisuje a
-    nezůstane v historii shellu. Ze skriptu jde poslat rourou:
+  login [--key] [--no-browser]
+    Vypíše ověřovací kód a otevře prohlížeč. Tam kód porovnáte, vyberete
+    kancelář a co smí CLI dělat; klíč vznikne až po potvrzení a CLI si ho
+    vyzvedne samo. Nic se nikam nevkládá.
+    --no-browser prohlížeč neotevře, jen vypíše adresu; hodí se přes SSH.
+    --key přepne na starou cestu a zeptá se na klíč vydaný ručně v aplikaci.
+    Při psaní se klíč nevypisuje a nezůstane v historii shellu. Ze skriptu
+    jde poslat rourou, to prohlížeč nepotřebuje taky:
     echo "$KLIC" | ctenifaktur login
 
   logout
@@ -1144,7 +1425,7 @@ Příkazy:
     dávka běží dál na serveru a doklady se neztratí. U dávky výpisů to řekne,
     ať se id nepošlou do špatného exportu.
 
-  export <id-dokladu...> --format <isdoc|pohoda|money-s3> [--out <soubor>]
+  export <id-dokladu...> --format <isdoc|pohoda|money-s3|abra-flexi> [--out <soubor>]
     Uloží hotový soubor a vypíše jeho jméno. Bez --out se jmenuje stejně jako
     při stažení z aplikace, s --out se existující soubor přepíše. Všechny
     doklady musí patřit jedné účetní jednotce. Pohoda a Money S3 vracejí vždy
@@ -1174,7 +1455,8 @@ Přepínač pro celé CLI:
       upload-statement     documentIds, incomplete a errorCode
       export,              { "file": "..." }; ty endpointy vracejí soubor,
       export-statement     ne JSON, takže dokument nese jen to, kam se zapsalo
-      login                { "apiUrl", "loggedIn": true, "accountingUnitCount" }
+      login                { "apiUrl", "loggedIn": true, "accountingUnitCount" },
+                           u přihlášení přes prohlížeč navíc "workspace"
       logout               { "apiUrl", "loggedIn": false }
       version              { "version": "..." }
     Nahrání, jehož odeslání do úložiště selhalo, je v dávce označeno jako
@@ -1206,9 +1488,13 @@ Příklad:
       | jq -r '.uploads[] | select(.errorCode) | "\\(.fileName) \\(.errorCode)"'
 
 Přihlášení:
-  Klíč vydáte v aplikaci v sekci Tým a nastavení, část API klíče, a předáte ho
-  příkazem ctenifaktur login. Uloží se s právy 0600 do
-  ~/.config/ctenifaktur/credentials.json, zvlášť pro každou adresu API.
+  ctenifaktur login otevře prohlížeč a klíč vydá za vás. Klíč se uloží s právy
+  0600 do ~/.config/ctenifaktur/credentials.json, zvlášť pro každou adresu API,
+  a v aplikaci ho najdete pojmenovaný podle tohohle stroje v sekci Tým a
+  nastavení, část API klíče. Tam ho taky zneplatníte.
+  Vydat klíč smí jen správce kanceláře a jen v placeném tarifu.
+  Do CI nebo do kontejneru vydejte klíč v aplikaci ručně a předejte ho
+  proměnnou CF_API_KEY nebo rourou do ctenifaktur login.
 
 Proměnné prostředí:
   CF_API_KEY   klíč; má přednost před uloženým, hodí se v CI a v kontejneru
@@ -1324,7 +1610,13 @@ async function main(): Promise<void> {
   // tehdy, když ho uživatel teprve zadává.
   assertSecureApiUrl(API_URL);
 
-  if (command === "login") return cmdLogin();
+  if (command === "login") {
+    const pasteKey = takeSwitch(rest, "key");
+    const noBrowser = takeSwitch(rest, "no-browser");
+    rejectUnknownFlags(rest);
+    if (rest.length > 0) fail("příkaz login nepřijímá poziční argumenty", "cli_usage");
+    return cmdLogin(pasteKey, noBrowser);
+  }
   if (command === "logout") return cmdLogout();
 
   // Prostředí má přednost před uloženým klíčem, aby si CI a kontejnery mohly

@@ -38,12 +38,19 @@ export const CLI = join(here, "..", "dist", "ctenifaktur.js");
  *   `documents`, `export`) answer `429` with `Retry-After: 1` before the real
  *   response. `Infinity` never lets up. One second keeps the waiting real but
  *   short enough for the suite.
- * @param options.credits Body for `GET /credits`.
+ * @param options.credits Body for `GET /credits`. Has a default because
+ *   `login` calls the endpoint to check the key works before it writes it to
+ *   disk, so a stub without one answers with an empty body and every login
+ *   test dies on `Unexpected end of JSON input` instead of on what it asserts.
  * @param options.accountingUnits Units for `GET /accounting-units`, which
  *   `units` reads and `login` calls to verify a key.
  * @param options.apiError `{ path, status, body }` — one endpoint answers this
  *   error instead of its normal response, so a test can drive the CLI's error
  *   rendering with a real body.
+ * @param options.device Terminal login. `start` is the body of
+ *   `POST /auth/device`, `polls` are the answers to `POST /auth/device/token`,
+ *   one per call with the last one repeating — so a single-element array is a
+ *   decision that never changes.
  */
 export async function startStub({
   batches = [],
@@ -53,8 +60,9 @@ export async function startStub({
   exportFile,
   throttle = {},
   apiError,
-  credits,
+  credits = { remaining: 0, planRemaining: 0, credits: 0, plan: "free", periodEnd: null },
   accountingUnits = [],
+  device,
 } = {}) {
   const received = {
     batchPolls: 0,
@@ -69,6 +77,9 @@ export async function startStub({
     documentListQueries: [],
     /** How many calls were answered with a 429. */
     throttled: 0,
+    /** How many times the terminal login was polled, and what it declared. */
+    devicePolls: 0,
+    deviceStarts: [],
   };
   let base = "";
   const throttleLeft = { ...throttle };
@@ -98,6 +109,31 @@ export async function startStub({
     if (apiError && url.pathname === apiError.path) {
       req.resume();
       return json(apiError.status, apiError.body);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/v1/auth/device") {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      received.deviceStarts.push(JSON.parse(Buffer.concat(chunks).toString()));
+      return json(201, {
+        userCode: "UBY7-YQR2",
+        deviceCode: "device-secret",
+        verificationUri: `${base}/pripojeni-cli`,
+        verificationUriComplete: `${base}/pripojeni-cli?kod=UBY7-YQR2`,
+        // Kept tiny so a test that waits for the decision does not sit through
+        // the real five seconds between polls.
+        expiresIn: 5,
+        interval: 1,
+        ...device?.start,
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/v1/auth/device/token") {
+      req.resume();
+      const polls = device?.polls ?? [];
+      const answer = polls[Math.min(received.devicePolls, polls.length - 1)];
+      received.devicePolls++;
+      return json(200, answer ?? { status: "pending" });
     }
 
     if (req.method === "GET" && url.pathname === "/api/v1/credits") {

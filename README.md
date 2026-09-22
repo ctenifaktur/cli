@@ -25,27 +25,42 @@ Needs Node 20 or newer. Works through `bunx`, `pnpm dlx` and `yarn dlx` too.
 
 ```console
 $ ctenifaktur login
-Klíč pro https://ctenifaktur.cz (nevypisuje se):
-Přihlášeno k https://ctenifaktur.cz, klíč uložen do /Users/you/.config/ctenifaktur/credentials.json.
+
+  ┌───────────────────────┐
+  │     Ověřovací kód     │
+  │                       │
+  │   U B Y 7 - Y Q R 2   │
+  └───────────────────────┘
+
+Otevíráme prohlížeč, potvrďte tam, že kód souhlasí.
+Kdyby se neotevřel: https://ctenifaktur.cz/pripojeni-cli?kod=UBY7-YQR2
+
+Přihlášeno ke kanceláři Tichá linka.
+Klíč uložen do /Users/you/.config/ctenifaktur/credentials.json.
 ```
 
-Issue a key in the app under **Tým a nastavení → API klíče** (team settings → API keys). The secret is shown once, at creation. The API is part of the paid plans.
+`login` opens a browser and mints the key for you. You compare the code against what the page shows, pick the office and what the CLI may do, and the key is created only then — nothing is ever pasted into a terminal. Issuing a key needs the **Správce** role and a paid plan; the key appears in the app under **Tým a nastavení → API klíče** named after this machine, which is also where you revoke it.
 
-`login` does not echo the key and takes no `--key` flag, so it stays out of your shell history and out of `ps`. It verifies the key against the API before writing anything, then stores it with mode `0600`, keyed by API host so a production and a local login can coexist. `ctenifaktur logout` forgets it again, which does not revoke the key itself; that happens in the app.
+`--no-browser` prints the address instead of opening anything, which is what you want over SSH.
 
-For CI and containers, `CF_API_KEY` takes precedence over the stored key and needs no login:
+The key is verified against the API before anything is written, then stored with mode `0600`, keyed by API host so a production and a local login can coexist. `ctenifaktur logout` forgets it again, which does not revoke the key itself; that happens in the app.
+
+For CI and containers there is no browser and no terminal, so issue a key by hand in the app and hand it over. `CF_API_KEY` takes precedence over the stored key and needs no login at all:
 
 ```bash
 CF_API_KEY=cf_live_... ctenifaktur upload invoice.pdf
 echo "$CF_API_KEY" | ctenifaktur login    # or store it once, from a pipe
+ctenifaktur login --key                   # or type it, at a terminal
 ```
+
+A pasted key never travels as a flag value, so it stays out of your shell history and out of `ps`; `--key` only switches to the prompt.
 
 `CF_API_URL` points the client at a different host and defaults to `https://ctenifaktur.cz`. Plain `http://` is refused for anything but localhost, because the key travels in the `Authorization` header.
 
 ## Usage
 
 ```bash
-ctenifaktur login
+ctenifaktur login [--key] [--no-browser]
 ctenifaktur logout
 ctenifaktur units
 ctenifaktur credits
@@ -53,7 +68,7 @@ ctenifaktur documents [--unit <id>] [--page <number>] [--limit <count>]
 ctenifaktur upload <file...> [--unit <id>] [--idempotency-key <key>]
 ctenifaktur upload-statement <file...> [--unit <id>] [--idempotency-key <key>]
 ctenifaktur status <batch-id>
-ctenifaktur export <document-id...> --format <isdoc|pohoda|money-s3> [--out <file>]
+ctenifaktur export <document-id...> --format <isdoc|pohoda|money-s3|abra-flexi> [--out <file>]
 ctenifaktur export-statement <statement-id...> --format <gpc|sepa-xml> [--out <file>]
 
 ctenifaktur version                # the installed build, also as --version
@@ -125,7 +140,7 @@ The document is the response from the public `/api/v1`, passed through rather th
 | `status` | the batch, verbatim from `GET /batches/{id}` — `status`, `counts`, and `uploads[]` with `documentIds`, `incomplete` and `errorCode` |
 | `upload`, `upload-statement` | that same batch in that same shape, with the one overlay described below |
 | `export`, `export-statement` | `{"file":"import.xml"}` — the endpoint answers with the bytes of a file, not with JSON, so the only fact the run produced is where it wrote |
-| `login` | `{"apiUrl":"…","loggedIn":true,"accountingUnitCount":1}` |
+| `login` | `{"apiUrl":"…","loggedIn":true,"accountingUnitCount":1}`, plus `"workspace":{"id":…,"name":…}` when the browser flow issued the key |
 | `logout` | `{"apiUrl":"…","loggedIn":false}` |
 | `version` | `{"version":"…"}` — read from the installed `package.json`, so it is the build that is actually running |
 
