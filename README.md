@@ -68,7 +68,7 @@ ctenifaktur documents [--unit <id>] [--page <number>] [--limit <count>]
 ctenifaktur upload <file...> [--unit <id>] [--idempotency-key <key>]
 ctenifaktur upload-statement <file...> [--unit <id>] [--idempotency-key <key>]
 ctenifaktur status <batch-id>
-ctenifaktur export <document-id...> --format <isdoc|pohoda|money-s3|abra-flexi> [--out <file>]
+ctenifaktur export <document-id...> --format <isdoc|pohoda|money-s3|abra-flexi|kastner-stereo> [--out <file>]
 ctenifaktur export-statement <statement-id...> --format <gpc|sepa-xml> [--out <file>]
 
 ctenifaktur version                # the installed build, also as --version
@@ -164,7 +164,7 @@ That is the point of the flag for `export`: the refusal tells you how to split t
 
 Exit codes do not change, and neither does anything without the flag. `ctenifaktur --help` stays prose, because that one really is for a human — under `--json` it goes to standard error, so a wrapper that adds the flag to whatever it was given never finds Czech text where a document should be.
 
-`documents --json` returns metadata for finding a document, not its extracted supplier, amounts or line items. There is no `--format json` for exports and there will not be one: extracted document data leaves the service as a real accounting format (ISDOC, Pohoda, Money S3), and converting that to JSON in the client would be a second implementation of the extraction. An analysis over the documents themselves is an analysis over the exported file; `--json` is for driving the pipeline that produces it.
+`documents --json` returns metadata for finding a document, not its extracted supplier, amounts or line items. There is no `--format json` for exports and there will not be one: extracted document data leaves the service as a real accounting format (ISDOC, Pohoda, Money S3, ABRA Flexi, KASTNER Stereo), and converting that to JSON in the client would be a second implementation of the extraction. An analysis over the documents themselves is an analysis over the exported file; `--json` is for driving the pipeline that produces it.
 
 ## AI agent skill
 
