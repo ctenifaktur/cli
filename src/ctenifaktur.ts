@@ -1425,11 +1425,13 @@ Příkazy:
     dávka běží dál na serveru a doklady se neztratí. U dávky výpisů to řekne,
     ať se id nepošlou do špatného exportu.
 
-  export <id-dokladu...> --format <isdoc|pohoda|money-s3|abra-flexi> [--out <soubor>]
+  export <id-dokladu...> --format <isdoc|pohoda|money-s3|abra-flexi|kastner-stereo> [--out <soubor>]
     Uloží hotový soubor a vypíše jeho jméno. Bez --out se jmenuje stejně jako
     při stažení z aplikace, s --out se existující soubor přepíše. Všechny
-    doklady musí patřit jedné účetní jednotce. Pohoda a Money S3 vracejí vždy
-    jedno XML, ISDOC u jednoho dokladu soubor .isdoc a u více dokladů ZIP.
+    doklady musí patřit jedné účetní jednotce. Pohoda, Money S3, ABRA Flexi
+    i KASTNER Stereo vracejí vždy jedno XML, ISDOC u jednoho dokladu soubor
+    .isdoc a u více dokladů ZIP. KASTNER Stereo bere v jednom exportu jen
+    jednu agendu: přijaté faktury, vydané faktury, nebo objednávky.
 
   export-statement <id-výpisu...> --format <gpc|sepa-xml> [--out <soubor>]
     Uloží hotový soubor s bankovními výpisy. Víc výpisů dá jeden soubor v obou

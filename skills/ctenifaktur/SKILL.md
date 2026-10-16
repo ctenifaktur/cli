@@ -26,7 +26,7 @@ ctenifaktur documents [--unit <id>] [--page <n>] [--limit <n>] # stored document
 ctenifaktur upload <file...> [--unit <id>]                   # upload, wait, print document ids
 ctenifaktur upload-statement <file...> [--unit <id>]         # same, for bank statements
 ctenifaktur status <batch-id>                                # check a batch, running or finished
-ctenifaktur export <ids...> --format <isdoc|pohoda|money-s3|abra-flexi> [--out file]
+ctenifaktur export <ids...> --format <isdoc|pohoda|money-s3|abra-flexi|kastner-stereo> [--out file]
 ctenifaktur export-statement <ids...> --format gpc [--out file]
 
 ctenifaktur version                                          # installed build, for feature checks
@@ -99,7 +99,15 @@ rejected with `mixed_accounting_units`, and the refusal lists every document
 with its `accountingUnitId` and `ico` on its own line underneath — split by
 those lines and run `export` once per unit. `--format isdoc` returns a `.isdoc` file for a single document
 but a ZIP for several, so do not hand `--out` an `.isdoc` name for a
-multi-document export; `pohoda`, `money-s3` and `abra-flexi` always return one XML file.
+multi-document export; `pohoda`, `money-s3`, `abra-flexi` and `kastner-stereo` always return one XML file.
+
+**One Stereo agenda per export.** KASTNER Stereo imports a file into a single
+agenda, so `--format kastner-stereo` takes only received invoices, only issued
+invoices, or only orders of one direction. A mixed batch is refused with
+`invalid_request`, and each listed document's message names its agenda: split
+by agenda and run `export` once per agenda. An issued invoice or an order with a
+line that has no price is refused too, because Stereo books those from the lines;
+the user fills the price in the app.
 
 **Idempotency.** Each run generates a fresh key, which covers a retried network
 call but not you running the command twice. If the upload is scheduled or you
